@@ -27,9 +27,13 @@
 ├── CLAUDE.md               # 本文件：開發指南與專案說明
 ├── crawler.py              # 上市櫃指數爬蟲（TWSE + TPEx）
 ├── tx_futures_crawler.py   # 台指期貨爬蟲（TAIFEX）
+├── strategy_signal.py      # 四票制策略訊號計算（每日自動執行）
+├── signal_gui.py           # 策略訊號 Web Dashboard（本地 HTTP 伺服器）
+├── open_dashboard.bat      # 一鍵開啟 Web Dashboard
 ├── daily_update.bat        # Windows 排程用批次檔（每日 17:03 自動執行）
 ├── stock_index.db          # SQLite 資料庫（上市櫃指數）
 ├── tx_futures.db           # SQLite 資料庫（台指期貨）
+├── strategy_signal.db      # SQLite 資料庫（策略訊號與回測結果）
 └── update_log.txt          # 每日排程執行的 log 輸出
 ```
 
@@ -98,8 +102,11 @@
 ### tx_futures_crawler.py（台指期貨）
 
 1. 查詢 DB 最新交易日期
-2. 從最新日期 +1 天開始，按月批次 POST 請求 TAIFEX futDataDown API
+2. 從最新日期**當天**開始（非 +1 天），按月批次 POST 請求 TAIFEX futDataDown API
 3. 解析 big5 編碼 CSV，過濾價差單，INSERT OR REPLACE 到 tx_futures 表
+
+從當天重抓而非 +1 天的原因：盤後交易時段（15:00~隔日05:00）資料會比一般盤更早入庫，
+若用 +1 天判斷會誤認為已完成，導致一般盤資料漏抓。INSERT OR REPLACE 確保不重複。
 
 可中斷續跑：依 DB 最新交易日期自動接續。
 
@@ -157,9 +164,44 @@ powershell "schtasks /run /tn StockIndexCrawler"
 powershell "schtasks /delete /tn StockIndexCrawler /f"
 ```
 
+## 四票制策略訊號（strategy_signal.py）
+
+- 資料來源：本地 `tx_futures.db`（台指期近月日盤）+ `stock_index.db`（櫃買指數收盤價）
+- 無外部 API 依賴（已移除 FinLab API）
+- 計算四張投票 → 總票數 → 目標部位 → 回測損益
+- 結果存入 `strategy_signal.db` 的 `daily_signals` 表
+- 每日 17:03 由 `daily_update.bat` 自動執行（在爬蟲之後）
+
+### 資料庫 Schema（strategy_signal.db）
+
+#### daily_signals
+
+| 欄位 | 型別 | 說明 |
+|---|---|---|
+| trading_date | TEXT | 交易日期（YYYY-MM-DD） |
+| close_price | INTEGER | 收盤價 |
+| vote1 ~ vote4 | INTEGER | 各策略投票（+1/-1/0） |
+| total_votes | INTEGER | 總票數（-4 ~ +4） |
+| tech_score | INTEGER | 技術分（0/1/2） |
+| target_position | INTEGER | 目標部位（1=做多, -1=做空, 0=空手） |
+| position | INTEGER | 實際持倉 |
+| daily_pnl | REAL | 當日損益（點數） |
+| cumulative_pnl | REAL | 累積損益 |
+| updated_at | TEXT | 計算時間 |
+
+## 策略訊號 Web Dashboard（signal_gui.py）
+
+- 本地 HTTP 伺服器（Python 標準庫，零外部依賴）
+- 暗色主題 Web 介面，瀏覽器開啟 http://127.0.0.1:8787
+- 顯示：最新訊號 / 統計摘要 / 年度績效 / 近期交易記錄
+- 「重新計算訊號」按鈕可即時重算（呼叫 strategy_signal.py）
+- 啟動：雙擊 `open_dashboard.bat` 或 `python signal_gui.py`
+- API: GET `/api/data` 取得 JSON、POST `/api/recalculate` 重算
+
 ## 注意事項
 
 - Python 3.14 對 SSL 驗證較嚴格，需設定 `SESSION.verify = False` 才能連線 TWSE/TPEx
 - Windows cp950 終端不支援 Unicode emoji，print 只用 ASCII 字元（如 `[WARN]`）
 - TWSE API 偶爾限流回傳空內容，`api_get_json()` 內建最多 3 次重試（10s/20s/30s）
 - TPEx 成交金額單位為仟股/仟元，程式內已乘以 1000 轉換
+- `daily_update.bat` 使用 `%~dp0` 定位目錄，不可改為硬編碼中文路徑（Task Scheduler 的 cmd.exe 編碼會導致 `cd /d` 失敗）

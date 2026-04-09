@@ -157,7 +157,9 @@ def main():
         print("DB is empty, starting from 2000/01")
         start = datetime(2000, 1, 1)
     else:
-        start = latest + timedelta(days=1)
+        # Re-fetch from latest date (not +1) to pick up missing sessions
+        # (e.g. after-hours data arrives before regular session data)
+        start = latest
         if start > now:
             print("DB is up to date")
             conn.close()
