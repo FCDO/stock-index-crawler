@@ -22,13 +22,16 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run crawler
+      - name: Run stock index crawler
         run: python crawler.py
 
-      - name: Commit updated database
+      - name: Run TX futures crawler
+        run: python tx_futures_crawler.py
+
+      - name: Commit updated databases
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add stock_index.db
+          git add stock_index.db tx_futures.db
           git diff --staged --quiet || git commit -m "Daily update: $(date -u +%Y-%m-%d)"
           git push

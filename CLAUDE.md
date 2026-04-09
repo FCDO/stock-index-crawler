@@ -24,11 +24,13 @@
 
 ```
 上市櫃指數爬蟲/
-├── CLAUDE.md           # 本文件：開發指南與專案說明
-├── crawler.py          # 主爬蟲程式（TWSE + TPEx）
-├── daily_update.bat    # Windows 排程用批次檔（每日 18:07 自動執行）
-├── stock_index.db      # SQLite 資料庫（爬取結果）
-└── update_log.txt      # 每日排程執行的 log 輸出
+├── CLAUDE.md               # 本文件：開發指南與專案說明
+├── crawler.py              # 上市櫃指數爬蟲（TWSE + TPEx）
+├── tx_futures_crawler.py   # 台指期貨爬蟲（TAIFEX）
+├── daily_update.bat        # Windows 排程用批次檔（每日 17:03 自動執行）
+├── stock_index.db          # SQLite 資料庫（上市櫃指數）
+├── tx_futures.db           # SQLite 資料庫（台指期貨）
+└── update_log.txt          # 每日排程執行的 log 輸出
 ```
 
 ## 資料庫 Schema（stock_index.db）
@@ -83,13 +85,23 @@
 - 日期格式：`YYYY/MM/DD`，OHLC 回傳西元、成交金額回傳民國年
 - stat 成功值：`"ok"`（小寫）
 
-## 爬蟲執行流程（crawler.py）
+## 爬蟲執行流程
+
+### crawler.py（上市櫃指數）
 
 1. **TWSE Phase 1**（月批次）：從 DB 最新日期所在月份開始，逐月抓 OHLC + FMTQIK
 2. **TWSE Phase 2**（逐日）：對 2004/02/11 後尚未處理的日期，逐日呼叫 MI_INDEX 修正成交金額，進度記錄在 `crawl_progress` 表
 3. **TPEx**（月批次）：從 DB 最新日期所在月份開始，逐月抓 OHLC + tradingIndexRpk（2009 前 fallback tradingIndex）
 
 全程可中斷續跑：Phase 1/TPEx 依 DB 最新日期續接，Phase 2 依 crawl_progress 續接。
+
+### tx_futures_crawler.py（台指期貨）
+
+1. 查詢 DB 最新交易日期
+2. 從最新日期 +1 天開始，按月批次 POST 請求 TAIFEX futDataDown API
+3. 解析 big5 編碼 CSV，過濾價差單，INSERT OR REPLACE 到 tx_futures 表
+
+可中斷續跑：依 DB 最新交易日期自動接續。
 
 ## 與 Yahoo Finance 的數值差異
 
@@ -99,6 +111,36 @@
 |---|---|---|---|---|
 | TWSE | 7931.40億 | 7939.63億 | 0.1% | MI_INDEX 統計口徑微差 |
 | TPEx | 2140.18億 | 2102.56億 | 1.8% | tradingIndexRpk 含盤後/零股/鉅額，Yahoo 不含 |
+
+## 資料庫 Schema（tx_futures.db）
+
+### tx_futures
+
+| 欄位 | 型別 | 說明 |
+|---|---|---|
+| trading_date | TEXT PK | 交易日期（YYYY/MM/DD） |
+| contract | TEXT | 契約（TX） |
+| delivery_month | TEXT PK | 到期月份（如 202604） |
+| open_price | INTEGER | 開盤價 |
+| high_price | INTEGER | 最高價 |
+| low_price | INTEGER | 最低價 |
+| close_price | INTEGER | 收盤價 |
+| price_change | INTEGER | 漲跌價 |
+| change_percent | REAL | 漲跌%（含 % 符號的字串） |
+| volume | INTEGER | 成交量 |
+| settlement_price | INTEGER | 結算價（無則為 '-'） |
+| open_interest | INTEGER | 未沖銷契約數（無則為 '-'） |
+| session | TEXT PK | 交易時段（一般/盤後） |
+
+PK = (trading_date, contract, delivery_month, session)
+
+## 台指期貨爬蟲（tx_futures_crawler.py）
+
+- 資料來源：台灣期貨交易所 (TAIFEX) `futDataDown` API（POST）
+- 商品代碼：TX（臺股期貨）
+- 按月批次下載 CSV（big5 編碼），過濾價差單（delivery_month 含 '/'）
+- 可中斷續跑：依 DB 最新日期自動接續
+- API 限流：每次請求間隔 3 秒，失敗自動重試 3 次
 
 ## 每日自動更新
 
