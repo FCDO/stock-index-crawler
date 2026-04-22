@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>台指期四票制策略</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg:#0d1117;--card:#161b22;--border:#30363d;
+  --text:#e6edf3;--dim:#8b949e;--green:#3fb950;
+  --red:#f85149;--blue:#58a6ff;--yellow:#d29922;
+  --card-r:12px;
+}
+body{background:var(--bg);color:var(--text);
+  font-family:'Segoe UI','Microsoft JhengHei UI',sans-serif;
+  padding:20px;max-width:1100px;margin:0 auto;line-height:1.5}
+h1{font-size:1.4rem;font-weight:600}
+
+.header{display:flex;justify-content:space-between;align-items:center;
+  margin-bottom:20px;flex-wrap:wrap;gap:8px}
+.header .updated{color:var(--dim);font-size:.85rem}
+
+.signal-card{background:var(--card);border:1px solid var(--border);
+  border-radius:var(--card-r);padding:28px;text-align:center;margin-bottom:20px}
+.signal-date{color:var(--dim);font-size:.95rem;margin-bottom:4px}
+.signal-action{font-size:3rem;font-weight:700;margin:8px 0}
+.signal-action.long{color:var(--green)}
+.signal-action.short{color:var(--red)}
+.signal-action.neutral{color:var(--dim)}
+.signal-total{font-size:1.1rem;color:var(--dim);margin-bottom:16px}
+.votes{display:flex;justify-content:center;gap:32px;flex-wrap:wrap}
+.vote-item{text-align:center}
+.vote-item .label{font-size:.8rem;color:var(--dim);margin-bottom:2px}
+.vote-item .val{font-size:1.4rem;font-weight:700;font-family:'Consolas',monospace}
+.vote-item .val.pos{color:var(--green)}
+.vote-item .val.neg{color:var(--red)}
+.vote-item .val.zero{color:var(--dim)}
+
+.stats-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));
+  gap:12px;margin-bottom:20px}
+.stat-card{background:var(--card);border:1px solid var(--border);
+  border-radius:var(--card-r);padding:14px;text-align:center}
+.stat-card .val{font-size:1.3rem;font-weight:700;font-family:'Consolas',monospace}
+.stat-card .label{font-size:.78rem;color:var(--dim);margin-top:2px}
+.stat-card .val.pos{color:var(--green)}.stat-card .val.neg{color:var(--red)}
+
+.section-title{font-size:1rem;font-weight:600;margin-bottom:10px;color:var(--dim)}
+.yearly-grid{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:20px}
+.year-card{background:var(--card);border:1px solid var(--border);
+  border-radius:8px;padding:10px 16px;text-align:center;min-width:90px}
+.year-card .year{font-size:.8rem;color:var(--dim)}
+.year-card .pnl{font-size:1.1rem;font-weight:700;font-family:'Consolas',monospace}
+.year-card .pnl.pos{color:var(--green)}.year-card .pnl.neg{color:var(--red)}
+.year-card.total{border-color:var(--blue)}
+.year-card.total .year{color:var(--blue)}
+
+.table-wrap{background:var(--card);border:1px solid var(--border);
+  border-radius:var(--card-r);overflow:hidden;margin-bottom:20px}
+table{width:100%;border-collapse:collapse;font-size:.88rem}
+th{background:#1c2128;color:var(--dim);font-weight:600;padding:10px 8px;
+  text-align:center;position:sticky;top:0;white-space:nowrap}
+td{padding:8px;text-align:center;border-top:1px solid var(--border);
+  font-family:'Consolas','Courier New',monospace;white-space:nowrap}
+tr:hover{background:#1c2128}
+tr.long td:nth-child(9){color:var(--green);font-weight:700}
+tr.short td:nth-child(9){color:var(--red);font-weight:700}
+td.pos{color:var(--green)}td.neg{color:var(--red)}td.zero{color:var(--dim)}
+.scroll-table{max-height:480px;overflow-y:auto}
+
+.btn-bar{display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+.btn{background:var(--blue);color:#fff;border:none;border-radius:8px;
+  padding:10px 24px;font-size:.95rem;cursor:pointer;font-weight:600;
+  transition:opacity .2s}
+.btn:hover{opacity:.85}.btn:disabled{opacity:.4;cursor:not-allowed}
+.btn-status{color:var(--dim);font-size:.85rem}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>台指期四票制策略</h1>
+  <span class="updated" id="updatedAt"></span>
+</div>
+
+<div class="signal-card" id="signalCard">
+  <div class="signal-date" id="signalDate">載入中...</div>
+  <div class="signal-action neutral" id="signalAction">--</div>
+  <div class="signal-total" id="signalTotal"></div>
+  <div class="votes" id="votesArea"></div>
+</div>
+
+<div class="stats-row" id="statsRow"></div>
+
+<div class="section-title">年度績效</div>
+<div class="yearly-grid" id="yearlyGrid"></div>
+
+<div class="section-title">近期交易記錄</div>
+<div class="table-wrap"><div class="scroll-table">
+<table><thead><tr>
+  <th>日期</th><th>收盤</th><th>票1</th><th>票2</th><th>票3</th><th>票4</th>
+  <th>總票</th><th>明日動作</th><th>今日部位</th><th>今日損益</th><th>累積損益</th>
+</tr></thead><tbody id="tableBody"></tbody></table>
+</div></div>
+
+<div class="btn-bar">
+  <button class="btn" id="btnRefresh" onclick="loadData()">重新載入</button>
+  <span class="btn-status" id="btnStatus">資料每日 17:03 由 GitHub Actions 自動更新</span>
+</div>
+
+<script>
+const ACTION={1:'做多',0:'空手','-1':'做空'};
+const ACLS={1:'long',0:'neutral','-1':'short'};
+const voteNames=['票1(日內std)','票2(日內×隔夜)','票3(季線)','票4(技術)'];
+
+function fmt(n){return n.toLocaleString('en-US',{maximumFractionDigits:0})}
+function sign(n){return n>0?'+'+fmt(n):fmt(n)}
+function vcls(v){return v>0?'pos':v<0?'neg':'zero'}
+
+function render(data){
+  if(!data||!data.length){
+    document.getElementById('signalAction').textContent='尚無資料';
+    return;
+  }
+  const last=data[data.length-1];
+
+  if(last.updated_at){
+    try{
+      const d=new Date(last.updated_at);
+      document.getElementById('updatedAt').textContent=
+        '最後更新: '+d.toLocaleString('zh-TW',{year:'numeric',month:'2-digit',
+        day:'2-digit',hour:'2-digit',minute:'2-digit'});
+    }catch(e){}
+  }
+
+  const tp=last.target_position;
+  document.getElementById('signalDate').textContent=
+    last.trading_date+' 盤後訊號 — 下一交易日開盤動作:';
+  const sa=document.getElementById('signalAction');
+  sa.textContent=ACTION[tp]||'?';
+  sa.className='signal-action '+(ACLS[tp]||'neutral');
+  document.getElementById('signalTotal').textContent='總票數: '+(last.total_votes>0?'+':'')+last.total_votes;
+
+  const va=document.getElementById('votesArea');
+  va.innerHTML='';
+  [last.vote1,last.vote2,last.vote3,last.vote4].forEach((v,i)=>{
+    va.innerHTML+=`<div class="vote-item"><div class="label">${voteNames[i]}</div>`+
+      `<div class="val ${vcls(v)}">${v>0?'+':''}${v}</div></div>`;
+  });
+
+  let totalPnl=0,maxDD=0,peak=0,cum=0,longD=0,shortD=0,neutralD=0,winD=0,loseD=0;
+  let winSum=0,lossSum=0;
+  data.forEach(r=>{
+    totalPnl+=r.daily_pnl;cum+=r.daily_pnl;
+    if(cum>peak)peak=cum;
+    const dd=cum-peak;if(dd<maxDD)maxDD=dd;
+    if(r.position===1)longD++;else if(r.position===-1)shortD++;else neutralD++;
+    if(r.daily_pnl>0){winD++;winSum+=r.daily_pnl}
+    if(r.daily_pnl<0){loseD++;lossSum+=r.daily_pnl}
+  });
+  const wr=winD+loseD>0?(winD/(winD+loseD)*100):0;
+  const ratio=maxDD!==0?totalPnl/Math.abs(maxDD):0;
+
+  const pnls=data.map(r=>r.daily_pnl);
+  const mean=pnls.reduce((a,b)=>a+b,0)/pnls.length;
+  const std=Math.sqrt(pnls.reduce((a,b)=>a+(b-mean)**2,0)/pnls.length);
+  const sharpe=std>0?(mean/std)*Math.sqrt(250):0;
+
+  const sr=document.getElementById('statsRow');
+  sr.innerHTML='';
+  const stats=[
+    ['總損益',sign(totalPnl),totalPnl>=0?'pos':'neg'],
+    ['MDD',fmt(maxDD),'neg'],
+    ['獲利/MDD',ratio.toFixed(1)+'x',ratio>=2?'pos':''],
+    ['夏普',sharpe.toFixed(2),sharpe>=1?'pos':''],
+    ['勝率',wr.toFixed(1)+'%',wr>=55?'pos':''],
+    ['做多',longD+'天',''],
+    ['做空',shortD+'天',''],
+    ['空手',neutralD+'天',''],
+  ];
+  stats.forEach(([label,val,cls])=>{
+    sr.innerHTML+=`<div class="stat-card"><div class="val ${cls}">${val}</div>`+
+      `<div class="label">${label}</div></div>`;
+  });
+
+  const yearly={};
+  data.forEach(r=>{
+    const y=r.trading_date.slice(0,4);
+    yearly[y]=(yearly[y]||0)+r.daily_pnl;
+  });
+  const yg=document.getElementById('yearlyGrid');
+  yg.innerHTML='';
+  let yTotal=0;
+  Object.keys(yearly).sort().forEach(y=>{
+    const v=yearly[y];yTotal+=v;
+    yg.innerHTML+=`<div class="year-card"><div class="year">${y}</div>`+
+      `<div class="pnl ${v>=0?'pos':'neg'}">${sign(v)}</div></div>`;
+  });
+  yg.innerHTML+=`<div class="year-card total"><div class="year">合計</div>`+
+    `<div class="pnl ${yTotal>=0?'pos':'neg'}">${sign(yTotal)}</div></div>`;
+
+  const tb=document.getElementById('tableBody');
+  tb.innerHTML='';
+  const recent=data.slice(-40).reverse();
+  recent.forEach(r=>{
+    const pos=r.position;
+    const cls=pos===1?'long':pos===-1?'short':'';
+    const tgt=ACTION[r.target_position]||'?';
+    const posStr=ACTION[r.position]||'?';
+    tb.innerHTML+=`<tr class="${cls}">`+
+      `<td>${r.trading_date}</td>`+
+      `<td>${fmt(r.close_price)}</td>`+
+      `<td class="${vcls(r.vote1)}">${r.vote1>0?'+':''}${r.vote1}</td>`+
+      `<td class="${vcls(r.vote2)}">${r.vote2>0?'+':''}${r.vote2}</td>`+
+      `<td class="${vcls(r.vote3)}">${r.vote3>0?'+':''}${r.vote3}</td>`+
+      `<td class="${vcls(r.vote4)}">${r.vote4>0?'+':''}${r.vote4}</td>`+
+      `<td class="${vcls(r.total_votes)}">${r.total_votes>0?'+':''}${r.total_votes}</td>`+
+      `<td>${tgt}</td><td>${posStr}</td>`+
+      `<td class="${r.daily_pnl>0?'pos':r.daily_pnl<0?'neg':'zero'}">${sign(r.daily_pnl)}</td>`+
+      `<td class="${r.cumulative_pnl>=0?'pos':'neg'}">${sign(r.cumulative_pnl)}</td></tr>`;
+  });
+}
+
+async function loadData(){
+  const btn=document.getElementById('btnRefresh');
+  const st=document.getElementById('btnStatus');
+  btn.disabled=true;
+  try{
+    const res=await fetch('./signals.json?t='+Date.now());
+    if(!res.ok)throw new Error('HTTP '+res.status);
+    const data=await res.json();
+    render(data);
+    st.textContent='已載入 '+data.length+' 筆資料 ('+new Date().toLocaleTimeString()+')';
+  }catch(e){
+    document.getElementById('signalDate').textContent='載入失敗';
+    st.textContent='錯誤: '+e.message;
+  }finally{
+    btn.disabled=false;
+  }
+}
+
+loadData();
+</script>
+</body>
+</html>

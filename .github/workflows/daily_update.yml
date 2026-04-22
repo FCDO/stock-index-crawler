@@ -31,10 +31,13 @@ jobs:
       - name: Compute strategy signals
         run: python strategy_signal.py
 
+      - name: Export signals JSON for dashboard
+        run: python export_signals.py
+
       - name: Commit updated databases
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add stock_index.db tx_futures.db strategy_signal.db
+          git add stock_index.db tx_futures.db strategy_signal.db docs/signals.json
           git diff --staged --quiet || git commit -m "Daily update: $(date -u +%Y-%m-%d)"
           git push
