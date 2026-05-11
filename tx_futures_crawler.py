@@ -82,7 +82,9 @@ def download_and_save(conn, start_str, end_str):
     """
     print(f"  {start_str} ~ {end_str}", end="", flush=True)
 
-    for attempt in range(3):
+    waits = (10, 30, 60, 120, 300)
+    attempts = len(waits) + 1
+    for attempt in range(attempts):
         try:
             r = SESSION.post(TAIFEX_URL, data={
                 "down_type": "1",
@@ -99,9 +101,9 @@ def download_and_save(conn, start_str, end_str):
 
             break
         except Exception as e:
-            if attempt < 2:
-                wait = 10 * (attempt + 1)
-                print(f" (retry {attempt+1}, wait {wait}s)", end="", flush=True)
+            if attempt < attempts - 1:
+                wait = waits[attempt]
+                print(f" (retry {attempt+1}/{attempts-1}, wait {wait}s)", end="", flush=True)
                 time.sleep(wait)
             else:
                 print(f" [WARN] {e}")

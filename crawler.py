@@ -105,17 +105,21 @@ def western_to_iso(date_str):
     return date_str.strip().replace("/", "-")
 
 
-def api_get_json(url, params, max_retries=3):
-    for attempt in range(max_retries):
+RETRY_WAITS = (10, 30, 60, 120, 300)
+
+
+def api_get_json(url, params, waits=RETRY_WAITS):
+    attempts = len(waits) + 1
+    for attempt in range(attempts):
         try:
             r = SESSION.get(url, params=params, timeout=30)
             if r.status_code == 200 and r.text.strip():
                 return r.json()
         except Exception:
             pass
-        if attempt < max_retries - 1:
-            wait = 10 * (attempt + 1)
-            print(f" (retry {attempt+1}, wait {wait}s)", end="", flush=True)
+        if attempt < attempts - 1:
+            wait = waits[attempt]
+            print(f" (retry {attempt+1}/{attempts-1}, wait {wait}s)", end="", flush=True)
             time.sleep(wait)
     return None
 
