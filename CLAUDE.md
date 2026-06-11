@@ -27,13 +27,16 @@
 ├── CLAUDE.md               # 本文件：開發指南與專案說明
 ├── crawler.py              # 上市櫃指數爬蟲（TWSE + TPEx）
 ├── tx_futures_crawler.py   # 台指期貨爬蟲（TAIFEX）
+├── institutional_crawler.py # 三大法人 + P/C ratio 爬蟲（TAIFEX / FinMind）
 ├── strategy_signal.py      # 四票制策略訊號計算（每日自動執行）
+├── strategy_signal_v2.py   # v2 誠實版訊號：PIT 查表 + SMA200 趨勢（與 v1 並行）
 ├── signal_gui.py           # 策略訊號 Web Dashboard（本地 HTTP 伺服器）
 ├── open_dashboard.bat      # 一鍵開啟 Web Dashboard
 ├── daily_update.bat        # Windows 排程用批次檔（每日 17:03 自動執行）
 ├── stock_index.db          # SQLite 資料庫（上市櫃指數）
 ├── tx_futures.db           # SQLite 資料庫（台指期貨）
-├── strategy_signal.db      # SQLite 資料庫（策略訊號與回測結果）
+├── institutional.db        # SQLite 資料庫（三大法人淨部位、TXO P/C ratio）
+├── strategy_signal.db      # SQLite 資料庫（策略訊號與回測結果；含 daily_signals_v2）
 └── update_log.txt          # 每日排程執行的 log 輸出
 ```
 
@@ -148,6 +151,66 @@ PK = (trading_date, contract, delivery_month, session)
 - 按月批次下載 CSV（big5 編碼），過濾價差單（delivery_month 含 '/'）
 - 可中斷續跑：依 DB 最新日期自動接續
 - API 限流：每次請求間隔 3 秒，失敗自動重試 3 次
+
+## 三大法人與 P/C ratio 爬蟲（institutional_crawler.py）
+
+存入 `institutional.db`，日期一律 `YYYY-MM-DD`：
+
+### fut_institutional（台指期三大法人，PK = (date, identity)）
+
+| 欄位 | 說明 |
+|---|---|
+| identity | `dealer`（自營商）/ `trust`（投信）/ `foreign`（外資） |
+| long_vol / short_vol / net_vol | 多方/空方/淨 交易口數 |
+| long_oi / short_oi / net_oi | 多方/空方/淨 未平倉口數 |
+
+- 歷史回補：FinMind API `TaiwanFuturesInstitutionalInvestors`（data_id=TX，**2018-06 起**，數值與 TAIFEX 完全一致）
+- 每日增量：TAIFEX `futContractsDateDown`（POST，commodityId=`TXF`）— **僅提供最近 3 年（滾動視窗）**，更早會回 HTML 錯誤頁
+
+### pc_ratio（TXO 買賣權比，PK = date）
+
+put_vol / call_vol / pc_vol_ratio / put_oi / call_oi / pc_oi_ratio
+
+- TAIFEX `pcRatioDown`（POST）— 完整歷史 **2007/07/02 起**，單次查詢上限約 **1 個月**
+- 回傳 CSV 為日期**降序**、行尾多一個逗號
+
+### spot_flows（TWSE 市場三大法人現貨買賣超，PK = date）
+
+foreign_net / trust_net / dealer_net / total_net（NT$，買進金額 − 賣出金額）
+
+- 歷史回補：FinMind `TaiwanStockTotalInstitutionalInvestors`（2007 起）
+- 每日增量：TWSE `rwd/zh/fund/BFI82U?type=day&dayDate=YYYYMMDD`（需 verify=False）
+- 兩來源數值完全一致（已驗證）
+
+### margin_totals（TWSE 市場融資融券餘額，PK = date）
+
+margin_lots（融資餘額，交易單位）/ short_lots（融券）/ margin_money（融資金額仟元，FinMind 來源可能為空）
+
+- 歷史回補：FinMind `TaiwanStockTotalMarginPurchaseShortSale`（2001 起）
+- 每日增量：TWSE `rwd/zh/marginTrading/MI_MARGN?selectType=MS`
+- 注意：MI_MARGN 約 21:00 公布，17:03 排程抓到的是前一日（訊號本來就用 t-1，無影響）
+
+### large_trader_tx（TAIFEX 台指期大額交易人，PK = date）
+
+t5/t10 × all/spec（全部大額交易人/特定法人）× long/short 未平倉口數 + mkt_oi
+
+- TAIFEX `largeTraderFutDown`（POST）— **完整歷史 2004 起，無 3 年限制**（與 futContractsDateDown 不同！）
+- 回傳含全部商品：程式僅保留 `商品=TX` 且 `月份=999999`（全契約合計）的列
+- 注意：TX 大額交易人統計口徑為 TX+MTX/4+TMF/20 合併
+
+### TAIFEX 限流注意（重要教訓）
+
+- 連續快速請求（3 秒間隔）會觸發 IP 級封鎖，所有端點一起回 HTML 錯誤頁；停止後約 1 分鐘解除
+- 請求間隔至少 **6 秒**；收到 HTML 回應應視為「被限流」→ 長退避重試（60/120/300s），**不可當成無資料跳過**
+
+## 策略訊號 v2（strategy_signal_v2.py）
+
+- 與 v1 並行執行，互不影響；結果存 `strategy_signal.db` 的 `daily_signals_v2` 表
+- 修正 v1 兩個問題：(1) 票1/2/3 查表改 point-in-time expanding（標籤滯後 2 天、自 2001 累積）→ 回測無前視、歷史票不重繪；(2) 修正暖身期 notna() 失效 bug（v1 的 notna 檢查作用在 np.where 字串上恆為 True）
+- 另含 SMA200 趨勢艙（多/空手，用換月調整連續價格）— 因子研究中唯一通過 2001-2019 與 2020-2026 兩期間一致性的訊號（風控用，非 alpha）
+- 另含 **LT 紙上追蹤艙**（大額交易人特定法人淨部位 vs 20 日均，多/空跟隨）：與趨勢/四票相關性 ≈0~負、dev(2005-2019) Sharpe 0.54、test Sharpe 0.53（穩定），但 MDD 厚尾（test −8,678）；組合 C3 因事前承諾的 MDD 條款 dev 未過 → **不部署，僅紙上追蹤**
+- ⚠️ LT 的 2020-2026 測試窗已於 2026-06-11 因設計失誤揭露（v2 回填歷史欄位時印出）。**未來任何 LT/組合採納決策，只能依據 2026-06-12 之後累積的紙上實盤記錄**（預先承諾的採納規則：滿 12 個月後，若實盤 LT Sharpe≥0.3 且與趨勢艙相關性≤0.2，方可考慮以半口規模納入）
+- 因子研究完整紀錄（六輪 68 組，2026-06 封槍，詳見各檔頭部的事前承諾）：`factor_research.py`（趨勢/跳空/價差等 22 組）、`factor_research2.py`（傳統技術指標 16 組）、`factor_research3.py`（P/C + 三大法人 12 組）、`factor_research4.py`（日曆效應+互補組合 7 組）、`factor_research5.py`（外資現貨/大額交易人/融資 8 組）、`factor_research6.py`（LT 互補組合 3 組）；`bias_check*.py` 為 v1 前視偏差驗證腳本
 
 ## 每日自動更新
 
