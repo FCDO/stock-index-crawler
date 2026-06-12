@@ -32,7 +32,7 @@
 ├── strategy_signal_v2.py   # v2 誠實版訊號：PIT 查表 + SMA200 趨勢（與 v1 並行）
 ├── signal_ledger.py        # append-only 訊號帳本（前瞻紙上實盤證據層；--report 看評估）
 ├── risk_layer_research.py  # 部位/風險層研究（2026-06-12 封存：全部未過採納規則）
-├── us_market_crawler.py    # S&P 500 日線爬蟲（Yahoo chart API；R7 研究用，未入每日排程）
+├── us_market_crawler.py    # S&P 500 日線爬蟲（Yahoo chart API；每日排程 + 類比工具使用）
 ├── us_market.db            # SQLite 資料庫（^GSPC 日線 1990+）
 ├── signal_gui.py           # 策略訊號 Web Dashboard（本地 HTTP 伺服器）
 ├── open_dashboard.bat      # 一鍵開啟 Web Dashboard
@@ -292,13 +292,18 @@ powershell "schtasks /delete /tn StockIndexCrawler /f"
 ## 市場狀態類比工具（market_analogue.py / analogue_gui.py）
 
 - **描述性工具，非交易訊號**：回答「今天的狀態像歷史上哪些時期、那些時期之後發生什麼」
-- 5 個事前固定的狀態維度（趨勢 vs SMA200 / 60 日動能 / 20 日波動 vs 252 日中位 /
-  距 252 日高點 5% / LT 淨部位 vs 20 日均）→ 32 種模式；有效樣本 2004-08 起約 5,400 日
-- 統計一律附 n、95% 信賴區間、無條件基準對照；模式分類與事後統計同源 →
+- **13 個事前固定狀態維度**（價格 7：趨勢 SMA200★/動能60★/動能20/波動水準★/波動方向/
+  位階★/RSI14；籌碼 4：LT★/外資現貨z/融資z/P-C未平倉比；外部 2：SPX趨勢/櫃買相對強弱）
+- 雙引擎：**A 粗分類模式** = ★核心 5 維 → 32 模式 + 波段切分（離散維度多了樣本密度
+  指數下降，故僅核心 5 維；2004-08 起約 5,400 日）；**B 全因子相似日** = 13 維連續值
+  全樣本 z、等權歐氏距離、top 30、類比日間隔 ≥10 交易日（2008-07 起約 4,400 日池）
+- 統計一律附 n、95% 信賴區間、無條件基準對照；狀態定義與事後統計同源 →
   屬樣本內敘述統計，多重比較與波段群聚使證據力有限（GUI 內建警語區塊，不可移除）
 - 與 signal_ledger / 部署路徑**完全隔離**；不接部位、未接入每日排程（GUI 內即時重算）
 - 啟動：雙擊 `open_analogue.bat` 或 `python analogue_gui.py` → http://127.0.0.1:8788
 - API：GET `/api/analogue` 取得 JSON（每次呼叫即時重讀資料庫計算）
+- us_market.db（SPX）已接入 daily_update.bat 每日更新（單一請求，失敗時美股維度
+  以 ffill 容忍滯後，工具不中斷）
 
 ## 注意事項
 

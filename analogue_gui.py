@@ -94,7 +94,27 @@ tr.ongoing td{background:#15201a}
   <div class="factors" id="factorsArea"></div>
 </div>
 
-<div class="section-title">事後統計（後 5 / 10 / 20 個交易日；含 95% 信賴區間，請與基準列對照）</div>
+<div class="section-title">引擎 B｜全因子相似日類比（13 維 z 距離・等權重・最相似 30 天・間隔 ≥10 日）</div>
+<div class="table-wrap"><table>
+  <thead><tr>
+    <th class="l">條件</th><th>樣本</th>
+    <th>後5日勝率</th><th>後5日均報酬</th>
+    <th>後10日勝率</th><th>後10日均報酬</th>
+    <th>後20日勝率</th><th>後20日均報酬</th>
+  </tr></thead>
+  <tbody id="simStatsBody"></tbody>
+</table></div>
+
+<div class="section-title">最相似的 12 個歷史交易日（距離越小越像；含當時所屬模式）</div>
+<div class="table-wrap"><table>
+  <thead><tr>
+    <th>日期</th><th>z距離</th><th class="l">當時模式</th>
+    <th>後5日</th><th>後10日</th><th>後20日</th>
+  </tr></thead>
+  <tbody id="simDaysBody"></tbody>
+</table></div>
+
+<div class="section-title">引擎 A｜粗分類模式事後統計（僅 ★ 核心 5 維；後 5 / 10 / 20 日，請與基準列對照）</div>
 <div class="table-wrap"><table>
   <thead><tr>
     <th class="l">條件</th><th>樣本</th>
@@ -122,7 +142,8 @@ tr.ongoing td{background:#15201a}
 
 <div class="caveats">
   <b>解讀前必讀（本工具的誠實邊界）</b>
-  <li>本頁為<b>樣本內敘述統計</b>：模式分類與事後統計用同一份歷史資料，且 32 種模式 × 3 個視窗存在大量多重比較——「好看的數字」是選擇偏誤的預期產物，不構成預測力證據。</li>
+  <li>本頁為<b>樣本內敘述統計</b>：狀態定義與事後統計用同一份歷史資料，且 32 種模式 × 3 個視窗存在大量多重比較——「好看的數字」是選擇偏誤的預期產物，不構成預測力證據。</li>
+  <li>相似日引擎為 13 維等權 z 距離（權重事前固定、不調參）；「相似」由這 13 個維度定義，市場可能在未納入的維度上完全不同。</li>
   <li>波段在時間上群聚、前瞻視窗互相重疊，有效樣本比表面 n 更小；信賴區間以獨立樣本假設計算，實際更寬。</li>
   <li>解讀建議：先看藍色基準列。只有條件統計的<b>整個信賴區間</b>離開基準時才值得多看一眼——即使如此，它描述的也只是過去。</li>
   <li>本工具與 72 組事前承諾因子研究、signal_ledger 部署路徑<b>完全隔離</b>，不接任何部位決策。</li>
@@ -146,9 +167,9 @@ function statCells(s){
 function render(d){
   const m=d.meta,cu=d.current,st=d.stats;
   document.getElementById('metaLine').textContent=
-    `資料截至 ${m.as_of}｜有效樣本 ${m.valid_from} 起共 ${m.valid_days.toLocaleString()} 個交易日｜計算於 ${m.computed_at.replace('T',' ')}`;
+    `資料截至 ${m.as_of}｜狀態維度 ${m.n_dims} 維｜模式樣本 ${m.valid_from} 起共 ${m.valid_days.toLocaleString()} 個交易日｜計算於 ${m.computed_at.replace('T',' ')}`;
   document.getElementById('curDate').textContent=`${m.as_of} 收盤狀態`;
-  document.getElementById('patternDesc').textContent=`模式 #${cu.pattern_id}｜${cu.desc}`;
+  document.getElementById('patternDesc').textContent=`粗分類模式 #${cu.pattern_id}｜${cu.desc}`;
   document.getElementById('patternMeta').innerHTML=
     `已持續 <b>${cu.run_len}</b> 個交易日｜此模式歷史佔比 <b>${cu.freq.toFixed(1)}%</b>｜`+
     `歷史波段 <b>${cu.n_hist_episodes}</b> 段`+
@@ -160,6 +181,29 @@ function render(d){
       `<div class="state ${f.on?'on':'off'}">${f.state}</div>`+
       `<div class="detail">${f.detail}</div></div>`;
   });
+
+  // 引擎 B：相似日
+  const ssb=document.getElementById('simStatsBody');ssb.innerHTML='';
+  const sdb=document.getElementById('simDaysBody');sdb.innerHTML='';
+  if(d.similar&&d.similar.ok){
+    const sm=d.similar;
+    [[`最相似 ${sm.n_sel} 天（${sm.valid_from} 起，池 ${sm.n_pool.toLocaleString()} 天）`,sm.stats,sm.n_sel,''],
+     [`無條件基準（相似日樣本池）`,sm.baseline,sm.n_pool,'base']
+    ].forEach(([lbl,blk,nn,rc])=>{
+      let h=`<tr class="${rc}"><td class="l">${lbl}</td><td>${nn.toLocaleString()}</td>`;
+      blk.forEach(s=>{h+=statCells(s)});
+      ssb.innerHTML+=h+'</tr>';
+    });
+    sm.days.forEach(r=>{
+      sdb.innerHTML+=`<tr><td>${r.date}</td><td>${r.dist.toFixed(2)}</td>`+
+        `<td class="l">#${r.pid==null?'--':r.pid}</td>`+
+        `<td class="${cls(r.fwd5)}">${pc(r.fwd5)}</td>`+
+        `<td class="${cls(r.fwd10)}">${pc(r.fwd10)}</td>`+
+        `<td class="${cls(r.fwd20)}">${pc(r.fwd20)}</td></tr>`;
+    });
+  }else{
+    ssb.innerHTML='<tr><td class="l dimc" colspan="8">今日資料不足（13 維未全數有效），相似日引擎暫停</td></tr>';
+  }
 
   const sb=document.getElementById('statsBody');sb.innerHTML='';
   const rows=[

@@ -5,23 +5,39 @@ market_analogue.py - 市場狀態類比工具（描述性，非交易訊號）
 ═══ 定位聲明（誠實邊界）═══
 本工具回答「今天的市場狀態像歷史上哪些時期？那些時期之後發生了什麼？」
 產出為【樣本內敘述統計】：
-  - 模式由 5 個狀態維度的組合定義（32 種），同一份資料既定義模式又統計事後報酬
-    → 統計上不構成前瞻預測力證據（多重比較 + 選擇偏誤）
-  - 波段在時間上群聚、前瞻視窗互相重疊 → 有效樣本小於表面 n
+  - 同一份資料既定義狀態又統計事後報酬 → 不構成前瞻預測力證據
+  - 波段/類比日在時間上群聚、前瞻視窗互相重疊 → 有效樣本小於表面 n
   - 一律附樣本數、95% 信賴區間、與無條件基準對照，供讀者自行折扣
   - 與部署路徑完全隔離：不接部位、不進 signal_ledger、不是 alpha 宣稱
 
-═══ 狀態維度（事前固定；為描述覆蓋面而選，未對前瞻報酬掃描）═══
-全部以換月調整連續序列（adjC）於 t 日收盤前資訊計算，前瞻視窗自 t+1 起：
-  1. TREND: adjC > SMA200          長期趨勢（教科書慣用 200 日）
-  2. MOM  : adjC > adjC[t-60]      中期動能（60 日 ≈ 一季）
-  3. VOL  : 20日年化波動 > 其 252 日滾動中位數   波動 regime（中位切分，無門檻參數）
-  4. HIGH : 距 252 日高點回檔 < 5%  價格位階（5% 為慣用「回檔」口語門檻）
-  5. CHIP : 大額交易人特定法人淨部位 > 其 20 日均   籌碼（沿用既有 LT 定義）
-有效樣本自 2004-08 起（受 LT 資料 2004-07 限制），約 5,300 個交易日。
+═══ 13 個狀態維度（事前固定；為描述覆蓋面而選，未對前瞻報酬掃描）═══
+全部以 t 日收盤前可得資訊計算，前瞻視窗自 t+1 起。★ = 粗分類模式核心維度。
+價格（TX 換月調整連續序列 adjC）:
+  ★ 1. TREND   adjC vs SMA200                     長期趨勢
+  ★ 2. MOM60   60 日變動                           中期動能
+    3. MOM20   20 日變動                           短期動能
+  ★ 4. VOLR    20日年化波動 vs 其 252 日中位數      波動水準
+    5. VOLD    20日波動 vs 其 60 日均               波動方向
+  ★ 6. HIGH    距 252 日高點回檔 5% 內/外           價格位階
+    7. RSI14   Wilder RSI 14                       擺盪位置
+籌碼（institutional.db）:
+  ★ 8. CHIP    大額交易人特定法人淨部位 vs 20日均    主力籌碼（2004-07+）
+    9. FSPOT   外資現貨買賣超 20 日合計之 252 日 z   外資動向（2007+）
+   10. MARGIN  融資餘額 20 日增減之 252 日 z         散戶槓桿（2001+）
+   11. PCOI    TXO P/C 未平倉比 vs 252 日中位        選擇權偏態（2008+ 含暖身）
+外部/跨市場:
+   12. SPXTR   S&P500 vs 其 SMA200（asof 對齊 U<=D-1）美股趨勢
+   13. RS20    櫃買 20 日報酬 - 加權 20 日報酬        風險偏好
+
+═══ 雙引擎 ═══
+A. 粗分類模式：5 個核心維度 → 32 模式（離散維度多了樣本密度指數級下降，
+   故僅用核心 5 維），波段切分與事後統計。有效樣本 2004-08 起。
+B. 全因子相似日：13 維連續值全樣本 z 分數、等權歐氏距離（權重不調），
+   取最相似 30 天，相鄰類比日至少間隔 10 個交易日（去群聚），
+   候選需有完整 20 日前瞻視窗。有效樣本 2008 起（受 P/C 暖身限制）。
+   z 正規化以「截至今日」全樣本計算 — 本工具只查詢當下，對查詢日即為 PIT。
 
 報酬定義：日報酬 = 換月調整點數變化 / 前日收盤價；H 日前瞻報酬 = 日報酬加總。
-波段（episode）= 同一模式的連續交易日；波段內報酬 = 起點收盤至末日收盤。
 """
 import math
 import os
@@ -33,6 +49,8 @@ import pandas as pd
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 HORIZONS = (5, 10, 20)
+N_SIMILAR = 30      # 相似日數量（事前固定）
+MIN_GAP = 10        # 類比日最小間隔（交易日，事前固定）
 DIM_LABELS = [
     ('趨勢多 (>SMA200)', '趨勢空 (<SMA200)'),
     ('動能正 (60日)', '動能負 (60日)'),
@@ -53,7 +71,6 @@ def wilson(k, n, z=1.96):
 
 
 def _hstats(fwd_list):
-    """每個 horizon 的 n / 勝率(CI) / 平均報酬(±1.96SE)，輸入 dict H -> array"""
     out = []
     for H in HORIZONS:
         x = np.asarray(fwd_list[H], dtype=float)
@@ -71,6 +88,10 @@ def _hstats(fwd_list):
     return out
 
 
+def _roll(x, w, fn):
+    return getattr(pd.Series(x).rolling(w), fn)().values
+
+
 def compute():
     # ---- 載入 ----
     conn = sqlite3.connect(os.path.join(BASE, 'tx_futures.db'))
@@ -83,12 +104,34 @@ def compute():
     conn = sqlite3.connect(os.path.join(BASE, 'institutional.db'))
     lt = pd.read_sql_query(
         "SELECT date, t5_spec_long - t5_spec_short AS lt_net FROM large_trader_tx ORDER BY date", conn)
+    fs = pd.read_sql_query("SELECT date, foreign_net FROM spot_flows ORDER BY date", conn)
+    mg = pd.read_sql_query("SELECT date, margin_lots FROM margin_totals ORDER BY date", conn)
+    pc = pd.read_sql_query("SELECT date, pc_oi_ratio FROM pc_ratio ORDER BY date", conn)
     conn.close()
+    conn = sqlite3.connect(os.path.join(BASE, 'stock_index.db'))
+    tw = pd.read_sql_query("SELECT date, close AS tw_close FROM twse_index ORDER BY date", conn)
+    tp = pd.read_sql_query("SELECT date, close AS tp_close FROM tpex_index ORDER BY date", conn)
+    conn.close()
+    spx = pd.read_sql_query("SELECT date, close AS spx_close FROM spx_daily ORDER BY date",
+                            sqlite3.connect(os.path.join(BASE, 'us_market.db')))
 
     df['trading_date'] = pd.to_datetime(df['trading_date'])
-    lt['date'] = pd.to_datetime(lt['date'])
-    df = df.merge(lt, left_on='trading_date', right_on='date', how='left').drop(columns='date')
-    df['lt_net'] = df['lt_net'].ffill(limit=5)
+    for d in (lt, fs, mg, pc, tw, tp, spx):
+        d['date'] = pd.to_datetime(d['date'])
+
+    # SPX：美股日曆上先算趨勢，再 asof 對齊（U 日資料自 U+1 可用）
+    spx['spx_sma200'] = spx['spx_close'].rolling(200).mean()
+    spx['spx_gap'] = (spx['spx_close'] - spx['spx_sma200']) / spx['spx_close']
+    spx['avail_from'] = spx['date'] + pd.Timedelta(days=1)
+    df = pd.merge_asof(df.sort_values('trading_date'),
+                       spx[['avail_from', 'spx_gap']].sort_values('avail_from'),
+                       left_on='trading_date', right_on='avail_from',
+                       direction='backward').drop(columns='avail_from')
+
+    for d in (lt, fs, mg, pc, tw, tp):
+        df = df.merge(d, left_on='trading_date', right_on='date', how='left').drop(columns='date')
+    for col in ('lt_net', 'foreign_net', 'margin_lots', 'pc_oi_ratio', 'tw_close', 'tp_close'):
+        df[col] = df[col].ffill(limit=5)
 
     n = len(df)
     o = df['open_price'].values.astype(float)
@@ -104,21 +147,47 @@ def compute():
     pct = np.zeros(n)
     pct[1:] = adj_ret[1:] / c[:-1]
 
-    # ---- 5 個維度（t 日收盤資訊）----
-    sma200 = pd.Series(adjC).rolling(200).mean().values
-    mom60 = adjC - np.concatenate([np.full(60, np.nan), adjC[:-60]])
-    vol20 = pd.Series(pct).rolling(20).std().values * math.sqrt(252)
-    volmed = pd.Series(vol20).rolling(252).median().values
-    hi252 = pd.Series(adjC).rolling(252).max().values
-    dd = (adjC - hi252) / c
+    # ---- 13 維因子（連續值；t 日收盤資訊）----
+    sma200 = _roll(adjC, 200, 'mean')
+    f_trend = (adjC - sma200) / c                                       # 1 ★
+    f_mom60 = (adjC - np.concatenate([np.full(60, np.nan), adjC[:-60]])) / c   # 2 ★
+    f_mom20 = (adjC - np.concatenate([np.full(20, np.nan), adjC[:-20]])) / c   # 3
+    vol20 = _roll(pct, 20, 'std') * math.sqrt(252)
+    volmed = _roll(vol20, 252, 'median')
+    f_volr = vol20 - volmed                                             # 4 ★
+    f_vold = vol20 - _roll(vol20, 60, 'mean')                           # 5
+    hi252 = _roll(adjC, 252, 'max')
+    f_dd = (adjC - hi252) / c                                           # 6 ★
+    delta = np.diff(adjC, prepend=adjC[0])
+    up = pd.Series(np.where(delta > 0, delta, 0.0)).ewm(alpha=1 / 14, adjust=False).mean().values
+    dn = pd.Series(np.where(delta < 0, -delta, 0.0)).ewm(alpha=1 / 14, adjust=False).mean().values
+    f_rsi = np.where(dn > 0, 100 - 100 / (1 + up / np.where(dn > 0, dn, 1)), 100.0)   # 7
+    f_rsi[:30] = np.nan
     ltv = df['lt_net'].values.astype(float)
-    ltma = pd.Series(ltv).rolling(20).mean().values
+    ltma = _roll(ltv, 20, 'mean')
+    f_chip = ltv - ltma                                                 # 8 ★
+    fs20 = _roll(df['foreign_net'].values.astype(float), 20, 'sum')
+    f_fspot = (fs20 - _roll(fs20, 252, 'mean')) / _roll(fs20, 252, 'std')        # 9
+    mgv = df['margin_lots'].values.astype(float)
+    mg20 = mgv - np.concatenate([np.full(20, np.nan), mgv[:-20]])
+    f_margin = (mg20 - _roll(mg20, 252, 'mean')) / _roll(mg20, 252, 'std')       # 10
+    pcv = df['pc_oi_ratio'].values.astype(float)
+    f_pcoi = pcv - _roll(pcv, 252, 'median')                            # 11
+    f_spx = df['spx_gap'].values.astype(float)                          # 12
+    twc = df['tw_close'].values.astype(float)
+    tpc = df['tp_close'].values.astype(float)
+    f_rs = (tpc / np.concatenate([np.full(20, np.nan), tpc[:-20]])
+            - twc / np.concatenate([np.full(20, np.nan), twc[:-20]]))   # 13
 
+    FMAT = np.column_stack([f_trend, f_mom60, f_mom20, f_volr, f_vold, f_dd, f_rsi,
+                            f_chip, f_fspot, f_margin, f_pcoi, f_spx, f_rs])
+
+    # ---- 粗分類模式（5 核心維度；與前版完全相同的定義）----
     bits = np.stack([
-        (adjC > sma200), (mom60 > 0), (vol20 > volmed), (dd > -0.05), (ltv > ltma),
+        (adjC > sma200), (f_mom60 > 0), (vol20 > volmed), (f_dd > -0.05), (ltv > ltma),
     ]).astype(int)
-    valid = ~(np.isnan(sma200) | np.isnan(mom60) | np.isnan(vol20)
-              | np.isnan(volmed) | np.isnan(dd) | np.isnan(ltv) | np.isnan(ltma))
+    valid = ~(np.isnan(sma200) | np.isnan(f_mom60) | np.isnan(vol20)
+              | np.isnan(volmed) | np.isnan(f_dd) | np.isnan(ltv) | np.isnan(ltma))
     pid = np.where(valid, (bits[0] * 16 + bits[1] * 8 + bits[2] * 4 + bits[3] * 2 + bits[4]), -1)
 
     # ---- 前瞻報酬 ----
@@ -129,8 +198,8 @@ def compute():
         f[:n - H] = cums[1 + H:] - cums[1:n - H + 1]
         fwd[H] = f
 
-    # ---- 波段切分（同模式連續日；invalid 中斷）----
-    episodes = []   # dict(pid, s, e, length)  s/e 為索引
+    # ---- 波段切分 ----
+    episodes = []
     s = None
     for t in range(n):
         if s is None:
@@ -146,16 +215,14 @@ def compute():
     cur_pid = int(pid[n - 1]) if pid[n - 1] >= 0 else None
     run_len = cur_ep['length'] if cur_ep else 0
 
-    # ---- 當前模式的歷史波段（排除進行中的這段，避免自我參照）----
     hist_eps = [e for e in episodes if e['pid'] == cur_pid and e is not cur_ep]
     onset_fwd = {H: [fwd[H][e['s']] for e in hist_eps] for H in HORIZONS}
     dayd_eps = [e for e in hist_eps if e['length'] >= run_len]
     dayd_fwd = {H: [fwd[H][e['s'] + run_len - 1] for e in dayd_eps] for H in HORIZONS}
     base_fwd = {H: fwd[H][valid] for H in HORIZONS}
 
-    # ---- 波段表（最近 12 段 + 進行中）----
     def ep_row(e, ongoing=False):
-        ep_ret = float((cums[e['e'] + 1] - cums[e['s'] + 1]) * 100)   # 起點收盤 -> 末日收盤
+        ep_ret = float((cums[e['e'] + 1] - cums[e['s'] + 1]) * 100)
         row = dict(start=dates[e['s']], end=dates[e['e']], length=e['length'],
                    ep_ret=ep_ret, ongoing=ongoing)
         for H in HORIZONS:
@@ -167,34 +234,82 @@ def compute():
     if cur_ep:
         ep_rows.append(ep_row(cur_ep, ongoing=True))
 
-    # ---- 模式分布（脈絡用）----
     vd = int(valid.sum())
-    dist = []
+    dist_tbl = []
     for p in range(32):
         days = int((pid == p).sum())
         if days > 0:
-            dist.append(dict(pid=p, desc=pattern_desc(p), days=days, freq=days / vd * 100))
-    dist.sort(key=lambda x: -x['days'])
+            dist_tbl.append(dict(pid=p, desc=pattern_desc(p), days=days, freq=days / vd * 100))
+    dist_tbl.sort(key=lambda x: -x['days'])
 
-    cur_bits = [int(bits[k][n - 1]) for k in range(5)]
+    # ---- 引擎 B：全因子相似日（13 維 z 距離、top 30、最小間隔 10 日）----
+    vfull = ~np.isnan(FMAT).any(axis=1)
+    similar = dict(ok=False)
+    if vfull[n - 1] and vfull.sum() > 300:
+        mu = FMAT[vfull].mean(axis=0)
+        sd = FMAT[vfull].std(axis=0)
+        Z = (FMAT - mu) / np.where(sd > 0, sd, 1)
+        q = Z[n - 1]
+        cand = vfull.copy()
+        cand[n - 1 - max(HORIZONS):] = False          # 需完整 20 日前瞻（亦排除今日近鄰）
+        dist = np.full(n, np.inf)
+        idx = np.where(cand)[0]
+        dist[idx] = np.sqrt(((Z[idx] - q) ** 2).sum(axis=1))
+        picked = []
+        for t in np.argsort(dist):
+            if not np.isfinite(dist[t]) or len(picked) >= N_SIMILAR:
+                break
+            if all(abs(int(t) - p) >= MIN_GAP for p in picked):
+                picked.append(int(t))
+        sim_fwd = {H: [fwd[H][t] for t in picked] for H in HORIZONS}
+        base2_fwd = {H: fwd[H][cand] for H in HORIZONS}
+        rows = []
+        for t in sorted(picked, key=lambda t: dist[t])[:12]:
+            rows.append(dict(date=dates[t], dist=float(dist[t]),
+                             pid=int(pid[t]) if pid[t] >= 0 else None,
+                             fwd5=float(fwd[5][t] * 100), fwd10=float(fwd[10][t] * 100),
+                             fwd20=float(fwd[20][t] * 100)))
+        similar = dict(ok=True, n_sel=len(picked), n_pool=int(cand.sum()),
+                       min_gap=MIN_GAP, valid_from=dates[int(np.argmax(vfull))],
+                       days=rows, stats=_hstats(sim_fwd), baseline=_hstats(base2_fwd))
+
+    # ---- 13 維因子卡片 ----
+    i = n - 1
+    e8 = 1e8  # 億
     factors = [
-        dict(name='長期趨勢', state=DIM_LABELS[0][1 - cur_bits[0]], on=cur_bits[0],
-             detail=f"收盤距 SMA200: {(adjC[n-1]-sma200[n-1])/c[n-1]*100:+.1f}%"),
-        dict(name='中期動能', state=DIM_LABELS[1][1 - cur_bits[1]], on=cur_bits[1],
-             detail=f"60 日變動: {mom60[n-1]/c[n-1]*100:+.1f}%"),
-        dict(name='波動 regime', state=DIM_LABELS[2][1 - cur_bits[2]], on=cur_bits[2],
-             detail=f"20日年化波動 {vol20[n-1]*100:.1f}% / 中位 {volmed[n-1]*100:.1f}%"),
-        dict(name='價格位階', state=DIM_LABELS[3][1 - cur_bits[3]], on=cur_bits[3],
-             detail=f"距 252 日高點: {dd[n-1]*100:+.1f}%"),
-        dict(name='大額交易人', state=DIM_LABELS[4][1 - cur_bits[4]], on=cur_bits[4],
-             detail=f"特定法人淨部位 {ltv[n-1]:+,.0f} 口 (20日均 {ltma[n-1]:+,.0f})"),
+        dict(name='★ 長期趨勢', on=int(bits[0][i]), state=DIM_LABELS[0][1 - bits[0][i]],
+             detail=f"收盤距 SMA200: {f_trend[i]*100:+.1f}%"),
+        dict(name='★ 中期動能', on=int(bits[1][i]), state=DIM_LABELS[1][1 - bits[1][i]],
+             detail=f"60 日變動: {f_mom60[i]*100:+.1f}%"),
+        dict(name='短期動能', on=int(f_mom20[i] > 0), state='20日漲' if f_mom20[i] > 0 else '20日跌',
+             detail=f"20 日變動: {f_mom20[i]*100:+.1f}%"),
+        dict(name='★ 波動水準', on=int(bits[2][i]), state=DIM_LABELS[2][1 - bits[2][i]],
+             detail=f"20日年化 {vol20[i]*100:.1f}% / 中位 {volmed[i]*100:.1f}%"),
+        dict(name='波動方向', on=int(f_vold[i] > 0), state='波動升' if f_vold[i] > 0 else '波動降',
+             detail=f"vs 60日均: {f_vold[i]*100:+.1f}pp"),
+        dict(name='★ 價格位階', on=int(bits[3][i]), state=DIM_LABELS[3][1 - bits[3][i]],
+             detail=f"距 252 日高點: {f_dd[i]*100:+.1f}%"),
+        dict(name='RSI(14)', on=int(f_rsi[i] > 50), state=f"RSI {f_rsi[i]:.0f}",
+             detail='高於 50' if f_rsi[i] > 50 else '低於 50'),
+        dict(name='★ 大額交易人', on=int(bits[4][i]), state=DIM_LABELS[4][1 - bits[4][i]],
+             detail=f"淨部位 {ltv[i]:+,.0f} 口 (20日均 {ltma[i]:+,.0f})"),
+        dict(name='外資現貨', on=int(fs20[i] > 0), state='20日買超' if fs20[i] > 0 else '20日賣超',
+             detail=f"{fs20[i]/e8:+,.0f} 億 (z={f_fspot[i]:+.1f})"),
+        dict(name='融資動向', on=int(mg20[i] > 0), state='融資增' if mg20[i] > 0 else '融資減',
+             detail=f"20日 {mg20[i]:+,.0f} 張 (z={f_margin[i]:+.1f})"),
+        dict(name='P/C 未平倉比', on=int(f_pcoi[i] > 0), state='偏高' if f_pcoi[i] > 0 else '偏低',
+             detail=f"{pcv[i]:.2f} (vs 252日中位 {f_pcoi[i]:+.2f})"),
+        dict(name='美股趨勢', on=int(f_spx[i] > 0), state='SPX>SMA200' if f_spx[i] > 0 else 'SPX<SMA200',
+             detail=f"距離: {f_spx[i]*100:+.1f}%"),
+        dict(name='櫃買相對強弱', on=int(f_rs[i] > 0), state='中小型強' if f_rs[i] > 0 else '中小型弱',
+             detail=f"20日相對: {f_rs[i]*100:+.1f}pp"),
     ]
 
     return dict(
         meta=dict(as_of=dates[n - 1], computed_at=datetime.now().isoformat(timespec='seconds'),
-                  valid_from=dates[np.argmax(valid)], valid_days=vd,
-                  n_patterns=len(dist), horizons=list(HORIZONS)),
-        current=dict(pattern_id=cur_pid, desc=pattern_desc(cur_pid), bits=cur_bits,
+                  valid_from=dates[int(np.argmax(valid))], valid_days=vd,
+                  n_patterns=len(dist_tbl), horizons=list(HORIZONS), n_dims=FMAT.shape[1]),
+        current=dict(pattern_id=cur_pid, desc=pattern_desc(cur_pid),
                      run_len=run_len, factors=factors,
                      freq=float((pid == cur_pid).sum() / vd * 100) if cur_pid is not None else None,
                      n_hist_episodes=len(hist_eps),
@@ -202,7 +317,8 @@ def compute():
         stats=dict(onset=_hstats(onset_fwd), dayd=_hstats(dayd_fwd), dayd_n_eps=len(dayd_eps),
                    baseline=_hstats(base_fwd)),
         episodes=ep_rows,
-        dist=dist[:8],
+        similar=similar,
+        dist=dist_tbl[:8],
     )
 
 
@@ -215,13 +331,17 @@ def pattern_desc(p):
 
 if __name__ == '__main__':
     r = compute()
-    m, cu, st = r['meta'], r['current'], r['stats']
-    print(f"[analogue] as of {m['as_of']}  valid {m['valid_from']}+ ({m['valid_days']} days)")
+    m, cu, st, sim = r['meta'], r['current'], r['stats'], r['similar']
+    print(f"[analogue] as of {m['as_of']}  dims={m['n_dims']}  pattern-valid {m['valid_from']}+ ({m['valid_days']} days)")
     print(f"[analogue] pattern #{cu['pattern_id']} run={cu['run_len']}d "
           f"freq={cu['freq']:.1f}% hist_episodes={cu['n_hist_episodes']}")
-    for blk, lbl in ((st['onset'], 'onset'), (st['dayd'], f"day{cu['run_len']}"), (st['baseline'], 'base')):
+    blocks = [(st['onset'], 'onset'), (st['dayd'], f"day{cu['run_len']}"), (st['baseline'], 'base')]
+    if sim.get('ok'):
+        print(f"[analogue] similar: pool={sim['n_pool']} ({sim['valid_from']}+) sel={sim['n_sel']} gap>={sim['min_gap']}d")
+        blocks += [(sim['stats'], 'sim'), (sim['baseline'], 'simbase')]
+    for blk, lbl in blocks:
         line = "  ".join(
             f"H{s['h']}: n={s['n']}" + (f" win={s['win']:.0f}%[{s['lo']:.0f},{s['hi']:.0f}] mean={s['mean']:+.2f}%"
                                         if s['n'] else "")
             for s in blk)
-        print(f"[analogue] {lbl:<6} {line}")
+        print(f"[analogue] {lbl:<7} {line}")
