@@ -6,6 +6,11 @@ echo === Daily Update Start: %DATE% %TIME% === >> update_log.txt 2>&1
 REM === Step 1: Sync with remote (accept cloud's tip as canonical starting point) ===
 git fetch origin >> update_log.txt 2>&1
 git reset --hard origin/master >> update_log.txt 2>&1
+if errorlevel 1 (
+    echo [WARN] reset failed - OneDrive file lock? retry in 20s >> update_log.txt
+    ping -n 21 127.0.0.1 >nul
+    git reset --hard origin/master >> update_log.txt 2>&1
+)
 
 REM === Step 2: Run crawlers and signal computation ===
 C:\Python314\python.exe crawler.py >> update_log.txt 2>&1
@@ -32,6 +37,11 @@ if errorlevel 1 (
         echo [WARN] Push lost race with cloud, resetting to origin/master >> update_log.txt 2>&1
         git fetch origin >> update_log.txt 2>&1
         git reset --hard origin/master >> update_log.txt 2>&1
+        if errorlevel 1 (
+            echo [WARN] reset failed - OneDrive file lock? retry in 20s >> update_log.txt
+            ping -n 21 127.0.0.1 >nul
+            git reset --hard origin/master >> update_log.txt 2>&1
+        )
     )
 ) else (
     echo [INFO] No data changes to commit >> update_log.txt 2>&1
