@@ -28,8 +28,22 @@ jobs:
       - name: Run TX futures crawler
         run: python tx_futures_crawler.py
 
+      - name: Run institutional crawler
+        continue-on-error: true   # TAIFEX 限流時不擋住後續訊號與帳本
+        run: python institutional_crawler.py
+
+      - name: Run US market crawler
+        continue-on-error: true
+        run: python us_market_crawler.py
+
       - name: Compute strategy signals
         run: python strategy_signal.py
+
+      - name: Compute v2 signals
+        run: python strategy_signal_v2.py
+
+      - name: Capture signal ledger (append-only, INSERT OR IGNORE)
+        run: python signal_ledger.py
 
       - name: Export signals JSON for dashboard
         run: python export_signals.py
@@ -38,6 +52,6 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add stock_index.db tx_futures.db strategy_signal.db docs/signals.json
+          git add stock_index.db tx_futures.db strategy_signal.db institutional.db signal_ledger.db us_market.db docs/signals.json
           git diff --staged --quiet || git commit -m "Daily update: $(date -u +%Y-%m-%d)"
           git push
