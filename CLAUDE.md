@@ -36,6 +36,9 @@
 ├── us_market.db            # SQLite 資料庫（^GSPC 日線 1990+）
 ├── signal_gui.py           # 策略訊號 Web Dashboard（本地 HTTP 伺服器）
 ├── open_dashboard.bat      # 一鍵開啟 Web Dashboard
+├── market_analogue.py      # 市場狀態類比引擎（描述性工具，非交易訊號）
+├── analogue_gui.py         # 市場狀態類比 Web GUI（port 8788）
+├── open_analogue.bat       # 一鍵開啟市場狀態類比工具
 ├── daily_update.bat        # Windows 排程用批次檔（每日 17:03 自動執行）
 ├── stock_index.db          # SQLite 資料庫（上市櫃指數）
 ├── tx_futures.db           # SQLite 資料庫（台指期貨）
@@ -285,6 +288,17 @@ powershell "schtasks /delete /tn StockIndexCrawler /f"
 - 「重新計算訊號」按鈕可即時重算（呼叫 strategy_signal.py）
 - 啟動：雙擊 `open_dashboard.bat` 或 `python signal_gui.py`
 - API: GET `/api/data` 取得 JSON、POST `/api/recalculate` 重算
+
+## 市場狀態類比工具（market_analogue.py / analogue_gui.py）
+
+- **描述性工具，非交易訊號**：回答「今天的狀態像歷史上哪些時期、那些時期之後發生什麼」
+- 5 個事前固定的狀態維度（趨勢 vs SMA200 / 60 日動能 / 20 日波動 vs 252 日中位 /
+  距 252 日高點 5% / LT 淨部位 vs 20 日均）→ 32 種模式；有效樣本 2004-08 起約 5,400 日
+- 統計一律附 n、95% 信賴區間、無條件基準對照；模式分類與事後統計同源 →
+  屬樣本內敘述統計，多重比較與波段群聚使證據力有限（GUI 內建警語區塊，不可移除）
+- 與 signal_ledger / 部署路徑**完全隔離**；不接部位、未接入每日排程（GUI 內即時重算）
+- 啟動：雙擊 `open_analogue.bat` 或 `python analogue_gui.py` → http://127.0.0.1:8788
+- API：GET `/api/analogue` 取得 JSON（每次呼叫即時重讀資料庫計算）
 
 ## 注意事項
 
