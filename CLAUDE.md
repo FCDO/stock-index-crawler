@@ -33,7 +33,8 @@
 ├── signal_ledger.py        # append-only 訊號帳本（前瞻紙上實盤證據層；--report 看評估）
 ├── risk_layer_research.py  # 部位/風險層研究（2026-06-12 封存：全部未過採納規則）
 ├── us_market_crawler.py    # S&P 500 日線爬蟲（Yahoo chart API；每日排程 + 類比工具使用）
-├── us_market.db            # SQLite 資料庫（^GSPC 日線 1990+）
+├── us_market.db            # SQLite（^GSPC 日線；不入版控—本機/雲端各自爬、3 秒可重建；
+│                           #   曾因 OneDrive 檔案鎖卡死 git reset，故移出 git 同步路徑）
 ├── signal_gui.py           # 策略訊號 Web Dashboard（本地 HTTP 伺服器）
 ├── open_dashboard.bat      # 一鍵開啟 Web Dashboard
 ├── market_analogue.py      # 市場狀態類比引擎（描述性工具，非交易訊號）
