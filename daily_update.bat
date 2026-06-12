@@ -13,11 +13,12 @@ C:\Python314\python.exe tx_futures_crawler.py >> update_log.txt 2>&1
 C:\Python314\python.exe institutional_crawler.py >> update_log.txt 2>&1
 C:\Python314\python.exe strategy_signal.py >> update_log.txt 2>&1
 C:\Python314\python.exe strategy_signal_v2.py >> update_log.txt 2>&1
+C:\Python314\python.exe signal_ledger.py >> update_log.txt 2>&1
 C:\Python314\python.exe export_signals.py >> update_log.txt 2>&1
 
 REM === Step 3: Stage data files only (avoid committing notebooks/csv/png) ===
 for /f "delims=" %%i in ('C:\Python314\python.exe -c "import datetime;print(datetime.date.today().isoformat())"') do set TODAY=%%i
-git add stock_index.db tx_futures.db strategy_signal.db institutional.db docs/signals.json >> update_log.txt 2>&1
+git add stock_index.db tx_futures.db strategy_signal.db institutional.db signal_ledger.db docs/signals.json >> update_log.txt 2>&1
 
 REM === Step 4: Commit if there are staged changes ===
 git diff --staged --quiet
