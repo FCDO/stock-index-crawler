@@ -10,29 +10,30 @@ market_analogue.py - 市場狀態類比工具（描述性，非交易訊號）
   - 一律附樣本數、95% 信賴區間、與無條件基準對照，供讀者自行折扣
   - 與部署路徑完全隔離：不接部位、不進 signal_ledger、不是 alpha 宣稱
 
-═══ 13 個狀態維度（事前固定；為描述覆蓋面而選，未對前瞻報酬掃描）═══
+═══ 10 個狀態維度（事前固定；為描述覆蓋面而選，未對前瞻報酬掃描）═══
 全部以 t 日收盤前可得資訊計算，前瞻視窗自 t+1 起。★ = 粗分類模式核心維度。
 價格（TX 換月調整連續序列 adjC）:
   ★ 1. TREND   adjC vs SMA200                     長期趨勢
   ★ 2. MOM60   60 日變動                           中期動能
     3. MOM20   20 日變動                           短期動能
   ★ 4. VOLR    20日年化波動 vs 其 252 日中位數      波動水準
-    5. VOLD    20日波動 vs 其 60 日均               波動方向
-  ★ 6. HIGH    距 252 日高點回檔 5% 內/外           價格位階
-    7. RSI14   Wilder RSI 14                       擺盪位置
+  ★ 5. HIGH    距 252 日高點回檔 5% 內/外           價格位階
 籌碼（institutional.db）:
-  ★ 8. CHIP    大額交易人特定法人淨部位 vs 20日均    主力籌碼（2004-07+）
-    9. FSPOT   外資現貨買賣超 20 日合計之 252 日 z   外資動向（2007+）
-   10. MARGIN  融資餘額 20 日增減之 252 日 z         散戶槓桿（2001+）
-   11. PCOI    TXO P/C 未平倉比 vs 252 日中位        選擇權偏態（2008+ 含暖身）
+  ★ 6. CHIP    大額交易人特定法人淨部位 vs 20日均    主力籌碼（2004-07+）
+    7. FSPOT   外資現貨買賣超 20 日合計之 252 日 z   外資動向（2007+）
+    8. PCOI    TXO P/C 未平倉比 vs 252 日中位        選擇權偏態（2008+ 含暖身）
 外部/跨市場:
-   12. SPXTR   S&P500 vs 其 SMA200（asof 對齊 U<=D-1）美股趨勢
-   13. RS20    櫃買 20 日報酬 - 加權 20 日報酬        風險偏好
+    9. SPXTR   S&P500 vs 其 SMA200（asof 對齊 U<=D-1）美股趨勢
+   10. RS20    櫃買 20 日報酬 - 加權 20 日報酬        風險偏好
+
+維度取捨記錄（2026-06-12 由 13 維限縮至 10 維；依概念冗餘度事前判斷，未看績效）：
+  刪 RSI14（與 MOM20 重複—近期漲跌的有界轉換）、VOLD 波動方向（二階量，
+  已被 VOLR 水準 regime 部分涵蓋）、MARGIN 融資（機械性跟隨價格，與動能冗餘）。
 
 ═══ 雙引擎 ═══
 A. 粗分類模式：5 個核心維度 → 32 模式（離散維度多了樣本密度指數級下降，
    故僅用核心 5 維），波段切分與事後統計。有效樣本 2004-08 起。
-B. 全因子相似日：13 維連續值全樣本 z 分數、等權歐氏距離（權重不調），
+B. 全因子相似日：10 維連續值全樣本 z 分數、等權歐氏距離（權重不調），
    取最相似 30 天，相鄰類比日至少間隔 10 個交易日（去群聚），
    候選需有完整 20 日前瞻視窗。有效樣本 2008 起（受 P/C 暖身限制）。
    z 正規化以「截至今日」全樣本計算 — 本工具只查詢當下，對查詢日即為 PIT。
@@ -105,7 +106,6 @@ def compute():
     lt = pd.read_sql_query(
         "SELECT date, t5_spec_long - t5_spec_short AS lt_net FROM large_trader_tx ORDER BY date", conn)
     fs = pd.read_sql_query("SELECT date, foreign_net FROM spot_flows ORDER BY date", conn)
-    mg = pd.read_sql_query("SELECT date, margin_lots FROM margin_totals ORDER BY date", conn)
     pc = pd.read_sql_query("SELECT date, pc_oi_ratio FROM pc_ratio ORDER BY date", conn)
     conn.close()
     conn = sqlite3.connect(os.path.join(BASE, 'stock_index.db'))
@@ -116,7 +116,7 @@ def compute():
                             sqlite3.connect(os.path.join(BASE, 'us_market.db')))
 
     df['trading_date'] = pd.to_datetime(df['trading_date'])
-    for d in (lt, fs, mg, pc, tw, tp, spx):
+    for d in (lt, fs, pc, tw, tp, spx):
         d['date'] = pd.to_datetime(d['date'])
 
     # SPX：美股日曆上先算趨勢，再 asof 對齊（U 日資料自 U+1 可用）
@@ -128,9 +128,9 @@ def compute():
                        left_on='trading_date', right_on='avail_from',
                        direction='backward').drop(columns='avail_from')
 
-    for d in (lt, fs, mg, pc, tw, tp):
+    for d in (lt, fs, pc, tw, tp):
         df = df.merge(d, left_on='trading_date', right_on='date', how='left').drop(columns='date')
-    for col in ('lt_net', 'foreign_net', 'margin_lots', 'pc_oi_ratio', 'tw_close', 'tp_close'):
+    for col in ('lt_net', 'foreign_net', 'pc_oi_ratio', 'tw_close', 'tp_close'):
         df[col] = df[col].ffill(limit=5)
 
     n = len(df)
@@ -155,32 +155,23 @@ def compute():
     vol20 = _roll(pct, 20, 'std') * math.sqrt(252)
     volmed = _roll(vol20, 252, 'median')
     f_volr = vol20 - volmed                                             # 4 ★
-    f_vold = vol20 - _roll(vol20, 60, 'mean')                           # 5
     hi252 = _roll(adjC, 252, 'max')
-    f_dd = (adjC - hi252) / c                                           # 6 ★
-    delta = np.diff(adjC, prepend=adjC[0])
-    up = pd.Series(np.where(delta > 0, delta, 0.0)).ewm(alpha=1 / 14, adjust=False).mean().values
-    dn = pd.Series(np.where(delta < 0, -delta, 0.0)).ewm(alpha=1 / 14, adjust=False).mean().values
-    f_rsi = np.where(dn > 0, 100 - 100 / (1 + up / np.where(dn > 0, dn, 1)), 100.0)   # 7
-    f_rsi[:30] = np.nan
+    f_dd = (adjC - hi252) / c                                           # 5 ★
     ltv = df['lt_net'].values.astype(float)
     ltma = _roll(ltv, 20, 'mean')
-    f_chip = ltv - ltma                                                 # 8 ★
+    f_chip = ltv - ltma                                                 # 6 ★
     fs20 = _roll(df['foreign_net'].values.astype(float), 20, 'sum')
-    f_fspot = (fs20 - _roll(fs20, 252, 'mean')) / _roll(fs20, 252, 'std')        # 9
-    mgv = df['margin_lots'].values.astype(float)
-    mg20 = mgv - np.concatenate([np.full(20, np.nan), mgv[:-20]])
-    f_margin = (mg20 - _roll(mg20, 252, 'mean')) / _roll(mg20, 252, 'std')       # 10
+    f_fspot = (fs20 - _roll(fs20, 252, 'mean')) / _roll(fs20, 252, 'std')        # 7
     pcv = df['pc_oi_ratio'].values.astype(float)
-    f_pcoi = pcv - _roll(pcv, 252, 'median')                            # 11
-    f_spx = df['spx_gap'].values.astype(float)                          # 12
+    f_pcoi = pcv - _roll(pcv, 252, 'median')                            # 8
+    f_spx = df['spx_gap'].values.astype(float)                          # 9
     twc = df['tw_close'].values.astype(float)
     tpc = df['tp_close'].values.astype(float)
     f_rs = (tpc / np.concatenate([np.full(20, np.nan), tpc[:-20]])
-            - twc / np.concatenate([np.full(20, np.nan), twc[:-20]]))   # 13
+            - twc / np.concatenate([np.full(20, np.nan), twc[:-20]]))   # 10
 
-    FMAT = np.column_stack([f_trend, f_mom60, f_mom20, f_volr, f_vold, f_dd, f_rsi,
-                            f_chip, f_fspot, f_margin, f_pcoi, f_spx, f_rs])
+    FMAT = np.column_stack([f_trend, f_mom60, f_mom20, f_volr, f_dd,
+                            f_chip, f_fspot, f_pcoi, f_spx, f_rs])
 
     # ---- 粗分類模式（5 核心維度；與前版完全相同的定義）----
     bits = np.stack([
@@ -285,18 +276,12 @@ def compute():
              detail=f"20 日變動: {f_mom20[i]*100:+.1f}%"),
         dict(name='★ 波動水準', on=int(bits[2][i]), state=DIM_LABELS[2][1 - bits[2][i]],
              detail=f"20日年化 {vol20[i]*100:.1f}% / 中位 {volmed[i]*100:.1f}%"),
-        dict(name='波動方向', on=int(f_vold[i] > 0), state='波動升' if f_vold[i] > 0 else '波動降',
-             detail=f"vs 60日均: {f_vold[i]*100:+.1f}pp"),
         dict(name='★ 價格位階', on=int(bits[3][i]), state=DIM_LABELS[3][1 - bits[3][i]],
              detail=f"距 252 日高點: {f_dd[i]*100:+.1f}%"),
-        dict(name='RSI(14)', on=int(f_rsi[i] > 50), state=f"RSI {f_rsi[i]:.0f}",
-             detail='高於 50' if f_rsi[i] > 50 else '低於 50'),
         dict(name='★ 大額交易人', on=int(bits[4][i]), state=DIM_LABELS[4][1 - bits[4][i]],
              detail=f"淨部位 {ltv[i]:+,.0f} 口 (20日均 {ltma[i]:+,.0f})"),
         dict(name='外資現貨', on=int(fs20[i] > 0), state='20日買超' if fs20[i] > 0 else '20日賣超',
              detail=f"{fs20[i]/e8:+,.0f} 億 (z={f_fspot[i]:+.1f})"),
-        dict(name='融資動向', on=int(mg20[i] > 0), state='融資增' if mg20[i] > 0 else '融資減',
-             detail=f"20日 {mg20[i]:+,.0f} 張 (z={f_margin[i]:+.1f})"),
         dict(name='P/C 未平倉比', on=int(f_pcoi[i] > 0), state='偏高' if f_pcoi[i] > 0 else '偏低',
              detail=f"{pcv[i]:.2f} (vs 252日中位 {f_pcoi[i]:+.2f})"),
         dict(name='美股趨勢', on=int(f_spx[i] > 0), state='SPX>SMA200' if f_spx[i] > 0 else 'SPX<SMA200',

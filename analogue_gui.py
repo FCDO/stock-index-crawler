@@ -94,7 +94,7 @@ tr.ongoing td{background:#15201a}
   <div class="factors" id="factorsArea"></div>
 </div>
 
-<div class="section-title">引擎 B｜全因子相似日類比（13 維 z 距離・等權重・最相似 30 天・間隔 ≥10 日）</div>
+<div class="section-title">引擎 B｜全因子相似日類比（10 維 z 距離・等權重・最相似 30 天・間隔 ≥10 日）</div>
 <div class="table-wrap"><table>
   <thead><tr>
     <th class="l">條件</th><th>樣本</th>
@@ -143,7 +143,7 @@ tr.ongoing td{background:#15201a}
 <div class="caveats">
   <b>解讀前必讀（本工具的誠實邊界）</b>
   <li>本頁為<b>樣本內敘述統計</b>：狀態定義與事後統計用同一份歷史資料，且 32 種模式 × 3 個視窗存在大量多重比較——「好看的數字」是選擇偏誤的預期產物，不構成預測力證據。</li>
-  <li>相似日引擎為 13 維等權 z 距離（權重事前固定、不調參）；「相似」由這 13 個維度定義，市場可能在未納入的維度上完全不同。</li>
+  <li>相似日引擎為 10 維等權 z 距離（權重事前固定、不調參）；「相似」由這 10 個維度定義，市場可能在未納入的維度上完全不同。</li>
   <li>波段在時間上群聚、前瞻視窗互相重疊，有效樣本比表面 n 更小；信賴區間以獨立樣本假設計算，實際更寬。</li>
   <li>解讀建議：先看藍色基準列。只有條件統計的<b>整個信賴區間</b>離開基準時才值得多看一眼——即使如此，它描述的也只是過去。</li>
   <li>本工具與 72 組事前承諾因子研究、signal_ledger 部署路徑<b>完全隔離</b>，不接任何部位決策。</li>
@@ -188,7 +188,7 @@ function render(d){
   if(d.similar&&d.similar.ok){
     const sm=d.similar;
     [[`最相似 ${sm.n_sel} 天（${sm.valid_from} 起，池 ${sm.n_pool.toLocaleString()} 天）`,sm.stats,sm.n_sel,''],
-     [`無條件基準（相似日樣本池）`,sm.baseline,sm.n_pool,'base']
+     ['無條件基準（相似日樣本池）',sm.baseline,sm.n_pool,'base']
     ].forEach(([lbl,blk,nn,rc])=>{
       let h=`<tr class="${rc}"><td class="l">${lbl}</td><td>${nn.toLocaleString()}</td>`;
       blk.forEach(s=>{h+=statCells(s)});
