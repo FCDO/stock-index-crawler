@@ -213,7 +213,7 @@ t5/t10 × all/spec（全部大額交易人/特定法人）× long/short 未平�
 欄位與 `fut_institutional` 完全相同（小型臺指期貨，含週契約）。
 
 - 歷史回補：FinMind `TaiwanFuturesInstitutionalInvestors`（data_id=MTX，**2018-06-05 起**；2017 回傳空）
-- 每日增量：TAIFEX `futContractsDateDown`（commodityId=**MXF**，只提供近 3 年），查詢結束日截在 `mtx_oi` 最後交易日（見下方限流注意）
+- 每日增量：TAIFEX `futContractsDateDown`（commodityId=**MXF**，只提供近 3 年），查詢結束日截在 `mtx_oi` 最後交易日（`inst_query_end()`，TXF 同；見下方限流注意）
 - 2026-11-07 驗證：2026-10-01～11-06 的 FinMind 與 TAIFEX 逐列一致（0 差異）
 
 ### mtx_oi（小台全市場未沖銷，PK = date；2026-11-07 新增）
@@ -235,8 +235,12 @@ t5/t10 × all/spec（全部大額交易人/特定法人）× long/short 未平�
 - 連續快速請求（3 秒間隔）會觸發 IP 級封鎖，所有端點一起回 HTML 錯誤頁；停止後約 1 分鐘解除
 - 請求間隔至少 **6 秒**；收到 HTML 回應應視為「被限流」→ 長退避重試（60/120/300s），**不可當成無資料跳過**
 - **例外（2026-11-07 實測）**：`futContractsDateDown` 的 queryEndDate 只要超過最後一個有資料的交易日（週末、假日、當日 15:00 前）
-  就回 HTML，不是限流——重試 8 分鐘也不會好。`fut_institutional_mtx` 已改成結束日截在 `mtx_oi` 最後交易日；
-  既有 `fut_institutional`（TXF）仍用今天當結束日，所以週末執行會在這裡耗 8 分鐘後 WARN（2026-10-31 log 可見），平日 17:03 排程不受影響。
+  就回 HTML，不是限流——重試 8 分鐘也不會好（2026-10-31 週六排程就卡在 TXF 這段）。
+  **已修（2026-11-07）**：`main()` 先跑 `update_mtx_oi()`（futDataDown 不挑結束日，它的最後日期＝最後交易日），
+  再由 `inst_query_end()` 把 `fut_institutional`（TXF）與 `fut_institutional_mtx`（MXF）的查詢結束日都截在那天。
+  `mtx_oi` 失敗或最後日期超過 `TD_STALE_DAYS`（14 天）沒更新時，印 WARN 並退回舊行為（結束日＝今天），不會讓法人表停更。
+  週六實測整支 32 秒、零重試（修前會多卡 8 分鐘）。仍未處理：平日 15:00 前手動執行，futDataDown 若已有當日資料而法人表還沒公布，
+  一樣會回 HTML（排程 17:03 不受影響）。
   `futDataDown`／`pcRatioDown`／`largeTraderFutDown` 不挑結束日。
 
 ## 策略訊號 v2（strategy_signal_v2.py）

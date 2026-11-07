@@ -39,6 +39,7 @@ FINMIND_MTX_START = 2018        # FinMind MTX 3-investor data starts 2018-06-05 
 FINMIND_SPOT_START = 2007
 FINMIND_MARGIN_START = 2001
 SLEEP = 6
+TD_STALE_DAYS = 14   # longer than any TAIFEX holiday gap (Lunar New Year ~10 calendar days)
 
 SESSION = requests.Session()
 SESSION.headers.update({
@@ -484,10 +485,10 @@ def crawl_taifex(conn, table, url, payload_fn, save_fn, default_start, end=None)
     print(f"[{table}] inserted/updated: {total}")
 
 
-def crawl_mtx(conn):
-    """MTX 3-investor positions + market OI. Increments only after the FinMind backfill exists
-    (TAIFEX inst. serves last 3y only). mtx_oi first: futDataDown tolerates end dates past the last trading day,
-    futContractsDateDown does not (HTML error page on weekends/holidays) -> clamp MXF query end to mtx_oi's last date."""
+def update_mtx_oi(conn):
+    """MTX market OI (FinMind backfill once, then TAIFEX futDataDown increments). Returns mtx_oi's last date,
+    i.e. the last trading day TAIFEX has data for. futDataDown tolerates end dates past that day; it is the
+    calendar used to clamp futContractsDateDown queries (see inst_query_end)."""
     backfill_finmind_mtx(conn)
     row = conn.execute("SELECT MAX(date) FROM mtx_oi").fetchone()
     if row[0]:
@@ -495,14 +496,32 @@ def crawl_mtx(conn):
         crawl_taifex(conn, "mtx_oi", FUT_DATA_URL,
                      lambda s, e: {"down_type": "1", "commodity_id": "MTX", "queryStartDate": s, "queryEndDate": e},
                      save_mtx_oi, datetime(latest.year, latest.month, 1))
-    last_td = conn.execute("SELECT MAX(date) FROM mtx_oi").fetchone()[0]
+    return conn.execute("SELECT MAX(date) FROM mtx_oi").fetchone()[0]
+
+
+def inst_query_end(last_td):
+    """futContractsDateDown returns an HTML error page when queryEndDate is past the last trading day with data
+    (weekends, holidays) -> fetch_csv retries ~8 min for nothing. Clamp the end to the last trading day.
+    Falls back to today (old behaviour) when that day is unknown or stale, so a broken mtx_oi never freezes the inst. tables."""
+    if not last_td:
+        print("[inst] [WARN] last trading day unknown (mtx_oi empty/failed) -> query end not clamped")
+        return None
+    d = datetime.strptime(last_td, "%Y-%m-%d")
+    if (datetime.now() - d).days > TD_STALE_DAYS:
+        print(f"[inst] [WARN] mtx_oi last date {last_td} is stale -> query end not clamped")
+        return None
+    return d
+
+
+def crawl_mtx(conn, end):
+    """MTX 3-investor positions. Increments only after the FinMind backfill exists (TAIFEX inst. serves last 3y only)."""
     row = conn.execute("SELECT MAX(date) FROM fut_institutional_mtx").fetchone()
-    if row[0] and last_td:
+    if row[0]:
         latest = datetime.strptime(row[0], "%Y-%m-%d")
         crawl_taifex(conn, "fut_institutional_mtx", FUT_URL,
                      lambda s, e: {"queryStartDate": s, "queryEndDate": e, "commodityId": "MXF"},
                      lambda c, r: save_fut(c, r, "fut_institutional_mtx"),
-                     datetime(latest.year, latest.month, 1), end=datetime.strptime(last_td, "%Y-%m-%d"))
+                     datetime(latest.year, latest.month, 1), end=end)
 
 
 def main():
@@ -519,13 +538,20 @@ def main():
     # 2) TWSE daily increments (spot flows + margin)
     twse_daily(conn)
 
-    # 3) TAIFEX: fut institutional incremental (3y window), pc_ratio + large trader (full history)
+    # 3) TAIFEX: MTX market OI first (its last date = last trading day, used to clamp the inst. query end),
+    #    then fut institutional incremental (3y window), pc_ratio + large trader (full history)
+    last_td = None
+    try:
+        last_td = update_mtx_oi(conn)
+    except Exception as e:
+        print(f"[mtx_oi] [WARN] {e}")
+    inst_end = inst_query_end(last_td)
     row = conn.execute("SELECT MAX(date) FROM fut_institutional").fetchone()
     if row[0]:
         latest = datetime.strptime(row[0], "%Y-%m-%d")
         crawl_taifex(conn, "fut_institutional", FUT_URL,
                      lambda s, e: {"queryStartDate": s, "queryEndDate": e, "commodityId": "TXF"},
-                     save_fut, datetime(latest.year, latest.month, 1))
+                     save_fut, datetime(latest.year, latest.month, 1), end=inst_end)
     crawl_taifex(conn, "pc_ratio", PC_URL,
                  lambda s, e: {"queryStartDate": s, "queryEndDate": e},
                  save_pc, PC_DATA_START)
@@ -533,9 +559,9 @@ def main():
                  lambda s, e: {"queryStartDate": s, "queryEndDate": e},
                  save_large_trader, LT_DATA_START)
 
-    # 4) MTX (mini-TAIEX) retail long/short inputs: isolated so a failure never blocks the tables above
+    # 4) MTX (mini-TAIEX) 3-investor positions: isolated so a failure never blocks the tables above
     try:
-        crawl_mtx(conn)
+        crawl_mtx(conn, inst_end)
     except Exception as e:
         print(f"[mtx] [WARN] {e}")
 
