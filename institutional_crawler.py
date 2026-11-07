@@ -8,6 +8,11 @@ Tables:
 - spot_flows        : TWSE market-wide investor buy/sell, NT$ (FinMind backfill 2007+, TWSE BFI82U daily)
 - margin_totals     : TWSE market margin balances       (FinMind backfill 2001+, TWSE MI_MARGN daily)
 - large_trader_tx   : TAIFEX TX large trader top5/10 OI (TAIFEX largeTraderFutDown, full history 2004+; month=999999 rows)
+- fut_institutional_mtx : MTX (mini-TAIEX) futures 3-investor positions, same columns as fut_institutional
+                      (FinMind backfill 2018-06+, TAIFEX daily commodityId=MXF; TAIFEX serves last 3y only)
+- mtx_oi            : MTX market-wide open interest = sum of per-contract OI, regular session, spreads excluded
+                      (mkt_oi incl. weekly contracts / mkt_oi_monthly excl. weekly; FinMind backfill 2018-06+,
+                      TAIFEX futDataDown daily). Retail long/short ratio = -(sum of 3-investor net_oi) / mkt_oi
 
 TAIFEX throttles: 6s spacing, HTML response = throttled -> long backoff (except pre-data months).
 """
@@ -25,10 +30,12 @@ DB_PATH = "institutional.db"
 FUT_URL = "https://www.taifex.com.tw/cht/3/futContractsDateDown"
 PC_URL = "https://www.taifex.com.tw/cht/3/pcRatioDown"
 LT_URL = "https://www.taifex.com.tw/cht/3/largeTraderFutDown"
+FUT_DATA_URL = "https://www.taifex.com.tw/cht/3/futDataDown"
 FINMIND_URL = "https://api.finmindtrade.com/api/v4/data"
 PC_DATA_START = datetime(2007, 7, 1)
 LT_DATA_START = datetime(2004, 1, 1)
 FINMIND_FUT_START = 2018
+FINMIND_MTX_START = 2018        # FinMind MTX 3-investor data starts 2018-06-05 (2017 returns empty)
 FINMIND_SPOT_START = 2007
 FINMIND_MARGIN_START = 2001
 SLEEP = 6
@@ -83,6 +90,21 @@ def init_db():
             t10_all_long INTEGER, t10_all_short INTEGER,
             t10_spec_long INTEGER, t10_spec_short INTEGER,
             mkt_oi INTEGER, updated_at TEXT
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS fut_institutional_mtx (
+            date TEXT, identity TEXT,
+            long_vol INTEGER, short_vol INTEGER, net_vol INTEGER,
+            long_oi INTEGER, short_oi INTEGER, net_oi INTEGER,
+            updated_at TEXT, PRIMARY KEY (date, identity)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS mtx_oi (
+            date TEXT PRIMARY KEY,
+            mkt_oi INTEGER, mkt_oi_monthly INTEGER, n_contracts INTEGER,
+            updated_at TEXT
         )
     """)
     conn.commit()
@@ -144,6 +166,69 @@ def backfill_finmind_fut(conn):
         total += len(data)
         time.sleep(2)
     print(f"[finmind fut] {total} rows")
+
+
+def save_mtx_oi_records(conn, recs):
+    """recs: iterable of (date 'YYYY-MM-DD', contract month code, oi) for REGULAR-session MTX rows.
+    Spread rows (month code contains '/') are skipped; weekly contracts (code contains 'W') count toward
+    mkt_oi but not mkt_oi_monthly. Returns number of dates written."""
+    days = {}
+    for d, code, oi in recs:
+        code = str(code).strip()
+        if not code or "/" in code or oi is None:
+            continue
+        rec = days.setdefault(d, [0, 0, 0])
+        rec[0] += oi
+        if "W" not in code:
+            rec[1] += oi
+        rec[2] += 1
+    ts = datetime.now().isoformat()
+    for d, (a, m, n) in days.items():
+        conn.execute("INSERT OR REPLACE INTO mtx_oi VALUES (?, ?, ?, ?, ?)", (d, a, m, n, ts))
+    conn.commit()
+    return len(days)
+
+
+def backfill_finmind_mtx(conn):
+    """MTX 3-investor positions (TaiwanFuturesInstitutionalInvestors, data_id=MTX) and MTX market OI
+    (TaiwanFuturesDaily, per-contract OI of the regular session, summed). Run once (skips when filled)."""
+    now = datetime.now()
+    if conn.execute("SELECT COUNT(*) FROM fut_institutional_mtx WHERE date < '2023-01-01'").fetchone()[0] > 1000:
+        print("[finmind mtx inst] already backfilled, skip")
+    else:
+        total = 0
+        for y in range(FINMIND_MTX_START, now.year + 1):
+            try:
+                data = _finmind("TaiwanFuturesInstitutionalInvestors", y, y, {"data_id": "MTX"})
+            except Exception as e:
+                print(f"[finmind mtx inst] {y} [WARN] {e}")
+                continue
+            ts = datetime.now().isoformat()
+            for d in data:
+                lv, sv = _num(d["long_deal_volume"]), _num(d["short_deal_volume"])
+                lo, so = _num(d["long_open_interest_balance_volume"]), _num(d["short_open_interest_balance_volume"])
+                conn.execute("INSERT OR REPLACE INTO fut_institutional_mtx VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                             (d["date"], norm_identity(d["institutional_investors"]),
+                              lv, sv, lv - sv, lo, so, lo - so, ts))
+            conn.commit()
+            total += len(data)
+            time.sleep(2)
+        print(f"[finmind mtx inst] {total} rows")
+    if conn.execute("SELECT COUNT(*) FROM mtx_oi WHERE date < '2023-01-01'").fetchone()[0] > 300:
+        print("[finmind mtx oi] already backfilled, skip")
+        return
+    total = 0
+    for y in range(FINMIND_MTX_START, now.year + 1):
+        try:
+            data = _finmind("TaiwanFuturesDaily", y, y, {"data_id": "MTX"})
+        except Exception as e:
+            print(f"[finmind mtx oi] {y} [WARN] {e}")
+            continue
+        recs = [(d["date"], d["contract_date"], _num(d["open_interest"])) for d in data
+                if d.get("trading_session") == "position" and d.get("futures_id") == "MTX"]
+        total += save_mtx_oi_records(conn, recs)
+        time.sleep(2)
+    print(f"[finmind mtx oi] {total} dates")
 
 
 def backfill_finmind_spot(conn):
@@ -299,13 +384,13 @@ def fetch_csv(url, payload, tag, short_retry=False):
                 return None
 
 
-def save_fut(conn, rows):
+def save_fut(conn, rows, table="fut_institutional"):
     ts = datetime.now().isoformat()
     count = 0
     for row in rows[1:]:
         if len(row) < 15 or "/" not in row[0]:
             continue
-        conn.execute("INSERT OR REPLACE INTO fut_institutional VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        conn.execute(f"INSERT OR REPLACE INTO {table} VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                      (row[0].strip().replace("/", "-"), norm_identity(row[2].strip()),
                       _num(row[3]), _num(row[5]), _num(row[7]),
                       _num(row[9]), _num(row[11]), _num(row[13]), ts))
@@ -351,6 +436,19 @@ def save_large_trader(conn, rows):
     return len(days)
 
 
+def save_mtx_oi(conn, rows):
+    """TAIFEX futDataDown (commodity_id=MTX) CSV: col0 date, col1 contract, col2 month code,
+    col11 open interest, col17 session ('一般' = regular). Aggregated per date by save_mtx_oi_records."""
+    recs = []
+    for row in rows[1:]:
+        if len(row) < 18 or "/" not in row[0] or row[1].strip() != "MTX":
+            continue
+        if row[17].strip() != "一般":
+            continue
+        recs.append((row[0].strip().replace("/", "-"), row[2], _num(row[11])))
+    return save_mtx_oi_records(conn, recs)
+
+
 def month_starts(start, end):
     cur = datetime(start.year, start.month, 1)
     while cur <= end:
@@ -359,9 +457,9 @@ def month_starts(start, end):
         cur = nxt
 
 
-def crawl_taifex(conn, table, url, payload_fn, save_fn, default_start):
+def crawl_taifex(conn, table, url, payload_fn, save_fn, default_start, end=None):
     row = conn.execute(f"SELECT MAX(date) FROM {table}").fetchone()
-    now = datetime.now()
+    now = end or datetime.now()
     has_data = bool(row[0])
     if has_data:
         latest = datetime.strptime(row[0], "%Y-%m-%d")
@@ -384,6 +482,27 @@ def crawl_taifex(conn, table, url, payload_fn, save_fn, default_start):
             print(" -> 0")
         time.sleep(SLEEP)
     print(f"[{table}] inserted/updated: {total}")
+
+
+def crawl_mtx(conn):
+    """MTX 3-investor positions + market OI. Increments only after the FinMind backfill exists
+    (TAIFEX inst. serves last 3y only). mtx_oi first: futDataDown tolerates end dates past the last trading day,
+    futContractsDateDown does not (HTML error page on weekends/holidays) -> clamp MXF query end to mtx_oi's last date."""
+    backfill_finmind_mtx(conn)
+    row = conn.execute("SELECT MAX(date) FROM mtx_oi").fetchone()
+    if row[0]:
+        latest = datetime.strptime(row[0], "%Y-%m-%d")
+        crawl_taifex(conn, "mtx_oi", FUT_DATA_URL,
+                     lambda s, e: {"down_type": "1", "commodity_id": "MTX", "queryStartDate": s, "queryEndDate": e},
+                     save_mtx_oi, datetime(latest.year, latest.month, 1))
+    last_td = conn.execute("SELECT MAX(date) FROM mtx_oi").fetchone()[0]
+    row = conn.execute("SELECT MAX(date) FROM fut_institutional_mtx").fetchone()
+    if row[0] and last_td:
+        latest = datetime.strptime(row[0], "%Y-%m-%d")
+        crawl_taifex(conn, "fut_institutional_mtx", FUT_URL,
+                     lambda s, e: {"queryStartDate": s, "queryEndDate": e, "commodityId": "MXF"},
+                     lambda c, r: save_fut(c, r, "fut_institutional_mtx"),
+                     datetime(latest.year, latest.month, 1), end=datetime.strptime(last_td, "%Y-%m-%d"))
 
 
 def main():
@@ -414,7 +533,14 @@ def main():
                  lambda s, e: {"queryStartDate": s, "queryEndDate": e},
                  save_large_trader, LT_DATA_START)
 
-    for t in ("fut_institutional", "pc_ratio", "spot_flows", "margin_totals", "large_trader_tx"):
+    # 4) MTX (mini-TAIEX) retail long/short inputs: isolated so a failure never blocks the tables above
+    try:
+        crawl_mtx(conn)
+    except Exception as e:
+        print(f"[mtx] [WARN] {e}")
+
+    for t in ("fut_institutional", "pc_ratio", "spot_flows", "margin_totals", "large_trader_tx",
+              "fut_institutional_mtx", "mtx_oi"):
         cnt, lo, hi = conn.execute(f"SELECT COUNT(*), MIN(date), MAX(date) FROM {t}").fetchone()
         print(f"  {t}: {cnt} rows ({lo} ~ {hi})")
     conn.close()
