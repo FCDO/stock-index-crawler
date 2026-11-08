@@ -28,6 +28,7 @@
 ├── crawler.py              # 上市櫃指數爬蟲（TWSE + TPEx）
 ├── tx_futures_crawler.py   # 台指期貨爬蟲（TAIFEX）
 ├── institutional_crawler.py # 三大法人 + P/C ratio 爬蟲（TAIFEX / FinMind）
+├── backfill_history_finlab.py # 一次性歷史回補（不在排程內）：TX/MTX 法人 2007-07～2018-06（FinLab）＋ mtx_oi 2007-07～2017-12（期交所）
 ├── strategy_signal.py      # 四票制策略訊號計算（每日自動執行）
 ├── strategy_signal_v2.py   # v2 誠實版訊號：PIT 查表 + SMA200 趨勢（與 v1 並行）
 ├── signal_ledger.py        # append-only 訊號帳本（前瞻紙上實盤證據層；--report 看評估）
@@ -176,6 +177,17 @@ PK = (trading_date, contract, delivery_month, session)
 
 - 歷史回補：FinMind API `TaiwanFuturesInstitutionalInvestors`（data_id=TX，**2018-06 起**，數值與 TAIFEX 完全一致）
 - 每日增量：TAIFEX `futContractsDateDown`（POST，commodityId=`TXF`）— **僅提供最近 3 年（滾動視窗）**，更早會回 HTML 錯誤頁
+  （網頁查詢 `futContractsDate` 也一樣：2026-11 實測回「無法查詢2023/11/08日以前資料」→ 期交所已拿不到更早的三大法人）
+- **更早歷史 2007-07-02～2018-06-04（2026-11-08 補）**：FinLab `futures_institutional_investors_trading_summary`（臺股期貨）
+  一次性回補，`backfill_history_finlab.py inst`（INSERT OR IGNORE，只寫 2018-06-05 之前）。**日期 < 2018-06-05 的列＝FinLab 來源**。
+  驗證：與既有 FinMind／期交所列重疊 6,153 列，未平倉三欄 0 差異；回補區間 2,704 個 TX 交易日一天不缺（含 18 個週六補班日）、
+  每日 3 身分、long−short＝net、法人多／空單合計 ≤ 全市場未平倉（tx_futures.db 加總）、2018-06-04→05 銜接平順。
+  成交量只有 2026-07-06 外資／自營商 2 列與 FinLab 不同：期交所官方＝本表，**是 FinLab 錯**（重疊 8 年未平倉 0 錯、成交量錯 1 天）
+  → 2018 前的 FinLab 列已無官方可對，可能也有零星這類錯誤（未平倉風險較低）
+- 2026-11-08 刪除 19 個非交易日複本（2026-04-11～06-07 的 18 個週六日＋2026-05-01 勞動節休市，57 列；
+  與前一個交易日逐欄相同，來源是 2026-06-11 的 FinMind 重補）。現在表內日期＝TX 交易日（2007-07-02 起 4,755 日、0 缺 0 多）；
+  週六日期（2007-09-29～2018-12-22 共 19 日）都是 TX 補班交易日、是真資料。`backfill_history_finlab.py clean` 可重查
+  （只刪 DUP_DATES_REVIEWED 名單內的複本，其他候選只列出）。⚠ 若再跑 FinMind 重補，可能又帶進非交易日複本
 
 ### pc_ratio（TXO 買賣權比，PK = date）
 
@@ -213,6 +225,7 @@ t5/t10 × all/spec（全部大額交易人/特定法人）× long/short 未平�
 欄位與 `fut_institutional` 完全相同（小型臺指期貨，含週契約）。
 
 - 歷史回補：FinMind `TaiwanFuturesInstitutionalInvestors`（data_id=MTX，**2018-06-05 起**；2017 回傳空）
+- **更早歷史 2007-07-02～2018-06-04（2026-11-08 補）**：FinLab（小型臺指期貨），同上腳本；重疊 6,153 列六欄全部 0 差異、2,704 個交易日一天不缺
 - 每日增量：TAIFEX `futContractsDateDown`（commodityId=**MXF**，只提供近 3 年），查詢結束日截在 `mtx_oi` 最後交易日（`inst_query_end()`，TXF 同；見下方限流注意）
 - 2026-11-07 驗證：2026-10-01～11-06 的 FinMind 與 TAIFEX 逐列一致（0 差異）
 
@@ -225,9 +238,13 @@ t5/t10 × all/spec（全部大額交易人/特定法人）× long/short 未平�
 | n_contracts | 當日加總的合約數 |
 
 - 歷史回補：FinMind `TaiwanFuturesDaily`（data_id=MTX，`trading_session=position`＝一般盤，2018-01 起）
+- **更早歷史 2007-07-02～2017-12-29（2026-11-08 補）**：期交所 `futDataDown`（commodity_id=MTX；此端點仍提供完整歷史，
+  不像三大法人只有 3 年）一次性回補，`backfill_history_finlab.py mtxoi`，2,604 日、一天不缺。閘門：重抓 2018-01～03 與
+  FinMind 列逐日比對 58 日，mkt_oi／mkt_oi_monthly／n_contracts 全部 0 差異。週契約（代碼含 W）2013-07-31 起出現，占比中位 0.3～1.5%
 - 每日增量：TAIFEX `futDataDown`（commodity_id=MTX，與 tx_futures_crawler 同端點；第 11 欄未沖銷、第 17 欄交易時段）
 - 2026-11-07 驗證：2026-10 共 19 日 FinMind 與 TAIFEX 加總完全一致
 - 用途：**小台散戶多空比** ＝ −(三大法人 net_oi 合計) ÷ mkt_oi（散戶＝全市場 − 三大法人）；研究見 `..\台指期_電金比\experiment_retail_ls.py`
+  （回補後可算到 2007-07-02；該檔 `load_rr()` 預設仍釘在事前登錄時的 2018-06-05，長歷史用 `load_rr(start=None)`）
 - `crawl_mtx()` 包在 try 內、排在既有表之後，失敗不影響其他表
 
 ### TAIFEX 限流注意（重要教訓）
