@@ -13,6 +13,10 @@ Tables:
 - mtx_oi            : MTX market-wide open interest = sum of per-contract OI, regular session, spreads excluded
                       (mkt_oi incl. weekly contracts / mkt_oi_monthly excl. weekly; FinMind backfill 2018-06+,
                       TAIFEX futDataDown daily). Retail long/short ratio = -(sum of 3-investor net_oi) / mkt_oi
+- opt_institutional_txo : TXO 3-investor positions split by call/put (PK date, identity, call_put C/P); volumes + amounts
+                      (amount = premium value, NT$ thousand). FinMind backfill 2018-06-05+ (TAIFEX TXO trading days only),
+                      TAIFEX callsAndPutsDateDown daily (commodityId=TXO; TAIFEX serves last 3y only).
+                      Foreign net direction = (call net_oi_amt) - (put net_oi_amt), foreign rows
 
 TAIFEX throttles: 6s spacing, HTML response = throttled -> long backoff (except pre-data months).
 """
@@ -31,11 +35,13 @@ FUT_URL = "https://www.taifex.com.tw/cht/3/futContractsDateDown"
 PC_URL = "https://www.taifex.com.tw/cht/3/pcRatioDown"
 LT_URL = "https://www.taifex.com.tw/cht/3/largeTraderFutDown"
 FUT_DATA_URL = "https://www.taifex.com.tw/cht/3/futDataDown"
+OPT_URL = "https://www.taifex.com.tw/cht/3/callsAndPutsDateDown"
 FINMIND_URL = "https://api.finmindtrade.com/api/v4/data"
 PC_DATA_START = datetime(2007, 7, 1)
 LT_DATA_START = datetime(2004, 1, 1)
 FINMIND_FUT_START = 2018
 FINMIND_MTX_START = 2018        # FinMind MTX 3-investor data starts 2018-06-05 (2017 returns empty)
+FINMIND_OPT_FIRST = "2018-06-05"  # FinMind TXO 3-investor (calls/puts split) first date
 FINMIND_SPOT_START = 2007
 FINMIND_MARGIN_START = 2001
 SLEEP = 6
@@ -106,6 +112,15 @@ def init_db():
             date TEXT PRIMARY KEY,
             mkt_oi INTEGER, mkt_oi_monthly INTEGER, n_contracts INTEGER,
             updated_at TEXT
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS opt_institutional_txo (
+            date TEXT, identity TEXT, call_put TEXT,
+            long_vol INTEGER, long_amt INTEGER, short_vol INTEGER, short_amt INTEGER,
+            long_oi INTEGER, long_oi_amt INTEGER, short_oi INTEGER, short_oi_amt INTEGER,
+            net_oi INTEGER, net_oi_amt INTEGER,
+            updated_at TEXT, PRIMARY KEY (date, identity, call_put)
         )
     """)
     conn.commit()
@@ -437,6 +452,77 @@ def save_large_trader(conn, rows):
     return len(days)
 
 
+def _sub(a, b):
+    return None if a is None or b is None else a - b
+
+
+def opt_missing_dates(conn):
+    """TXO trading days (pc_ratio calendar) from FINMIND_OPT_FIRST to the table's last date lacking any of the 6 rows."""
+    hi = conn.execute("SELECT MAX(date) FROM opt_institutional_txo").fetchone()[0]
+    if not hi:
+        return None
+    return [r[0] for r in conn.execute(
+        "SELECT p.date FROM pc_ratio p LEFT JOIN (SELECT date, COUNT(*) n FROM opt_institutional_txo GROUP BY date) o "
+        "ON p.date = o.date WHERE p.date >= ? AND p.date <= ? AND IFNULL(o.n, 0) < 6 ORDER BY p.date",
+        (FINMIND_OPT_FIRST, hi))]
+
+
+def backfill_finmind_opt(conn):
+    """TXO 3-investor positions split by call/put (TaiwanOptionInstitutionalInvestors, data_id=TXO), 2018-06-05+.
+    Runs until complete (skips once every pc_ratio trading day up to the table's last date has 6 rows).
+    Only pc_ratio dates are kept, so FinMind non-trading-day copies never get in."""
+    miss = opt_missing_dates(conn)
+    n_old = conn.execute("SELECT COUNT(*) FROM opt_institutional_txo WHERE date < '2023-01-01'").fetchone()[0]
+    if miss is not None and not miss and n_old > 1000:
+        print("[finmind txo inst] already backfilled, skip")
+        return
+    cal = {r[0] for r in conn.execute("SELECT date FROM pc_ratio")}
+    total = dropped = 0
+    for y in range(int(FINMIND_OPT_FIRST[:4]), datetime.now().year + 1):
+        try:
+            data = _finmind("TaiwanOptionInstitutionalInvestors", y, y, {"data_id": "TXO"})
+        except Exception as e:
+            print(f"[finmind txo inst] {y} [WARN] {e}")
+            continue
+        ts = datetime.now().isoformat()
+        for d in data:
+            if d["date"] not in cal:
+                dropped += 1
+                continue
+            lo, so = _num(d["long_open_interest_balance_volume"]), _num(d["short_open_interest_balance_volume"])
+            loa, soa = _num(d["long_open_interest_balance_amount"]), _num(d["short_open_interest_balance_amount"])
+            conn.execute("INSERT OR REPLACE INTO opt_institutional_txo VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                         (d["date"], norm_identity(d["institutional_investors"]), "P" if "賣" in d["call_put"] else "C",
+                          _num(d["long_deal_volume"]), _num(d["long_deal_amount"]),
+                          _num(d["short_deal_volume"]), _num(d["short_deal_amount"]),
+                          lo, loa, so, soa, _sub(lo, so), _sub(loa, soa), ts))
+            total += 1
+        conn.commit()
+        print(f"[finmind txo inst] {y}: {len(data)} rows")
+        time.sleep(2)
+    miss = opt_missing_dates(conn) or []
+    print(f"[finmind txo inst] {total} rows saved, {dropped} non-trading-day rows dropped, "
+          f"{len(miss)} trading days still incomplete{(' e.g. ' + ', '.join(miss[:5])) if miss else ''}")
+
+
+def save_opt(conn, rows):
+    ts = datetime.now().isoformat()
+    count = 0
+    for row in rows[1:]:
+        if len(row) < 16 or "/" not in row[0]:
+            continue
+        cp = row[2].strip().upper()
+        if cp not in ("CALL", "PUT"):
+            continue
+        conn.execute("INSERT OR REPLACE INTO opt_institutional_txo VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                     (row[0].strip().replace("/", "-"), norm_identity(row[3].strip()), cp[0],
+                      _num(row[4]), _num(row[5]), _num(row[6]), _num(row[7]),
+                      _num(row[10]), _num(row[11]), _num(row[12]), _num(row[13]), _num(row[14]), _num(row[15]), ts))
+        count += 1
+    conn.commit()
+    return count
+
+
 def save_mtx_oi(conn, rows):
     """TAIFEX futDataDown (commodity_id=MTX) CSV: col0 date, col1 contract, col2 month code,
     col11 open interest, col17 session ('一般' = regular). Aggregated per date by save_mtx_oi_records."""
@@ -524,6 +610,17 @@ def crawl_mtx(conn, end):
                      datetime(latest.year, latest.month, 1), end=end)
 
 
+def crawl_opt(conn, end):
+    """TXO 3-investor positions split by call/put: FinMind backfill until complete, then TAIFEX increments (last 3y only)."""
+    backfill_finmind_opt(conn)
+    row = conn.execute("SELECT MAX(date) FROM opt_institutional_txo").fetchone()
+    if row[0]:
+        latest = datetime.strptime(row[0], "%Y-%m-%d")
+        crawl_taifex(conn, "opt_institutional_txo", OPT_URL,
+                     lambda s, e: {"queryStartDate": s, "queryEndDate": e, "commodityId": "TXO"},
+                     save_opt, datetime(latest.year, latest.month, 1), end=end)
+
+
 def main():
     print("=" * 50)
     print("TAIFEX/TWSE Institutional & Flows Crawler")
@@ -565,8 +662,14 @@ def main():
     except Exception as e:
         print(f"[mtx] [WARN] {e}")
 
+    # 5) TXO 3-investor positions split by call/put: isolated the same way
+    try:
+        crawl_opt(conn, inst_end)
+    except Exception as e:
+        print(f"[txo inst] [WARN] {e}")
+
     for t in ("fut_institutional", "pc_ratio", "spot_flows", "margin_totals", "large_trader_tx",
-              "fut_institutional_mtx", "mtx_oi"):
+              "fut_institutional_mtx", "mtx_oi", "opt_institutional_txo"):
         cnt, lo, hi = conn.execute(f"SELECT COUNT(*), MIN(date), MAX(date) FROM {t}").fetchone()
         print(f"  {t}: {cnt} rows ({lo} ~ {hi})")
     conn.close()

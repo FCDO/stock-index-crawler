@@ -44,7 +44,7 @@
 ├── daily_update.bat        # Windows 排程用批次檔（每日 17:03 自動執行）
 ├── stock_index.db          # SQLite 資料庫（上市櫃指數）
 ├── tx_futures.db           # SQLite 資料庫（台指期貨）
-├── institutional.db        # SQLite 資料庫（三大法人淨部位、TXO P/C ratio、小台法人＋全市場未平倉）
+├── institutional.db        # SQLite 資料庫（三大法人淨部位、TXO P/C ratio、小台法人＋全市場未平倉、TXO 法人買賣權分計）
 ├── strategy_signal.db      # SQLite 資料庫（策略訊號與回測結果；含 daily_signals_v2）
 ├── signal_ledger.db        # SQLite 資料庫（append-only 帳本；本機+雲端雙寫，先寫者留存）
 ├── docs/research/          # 六輪因子研究 + 風險層研究的永久輸出記錄（見 SUMMARY.md）
@@ -246,6 +246,25 @@ t5/t10 × all/spec（全部大額交易人/特定法人）× long/short 未平�
 - 用途：**小台散戶多空比** ＝ −(三大法人 net_oi 合計) ÷ mkt_oi（散戶＝全市場 − 三大法人）；研究見 `..\台指期_電金比\experiment_retail_ls.py`
   （回補後可算到 2007-07-02；該檔 `load_rr()` 預設仍釘在事前登錄時的 2018-06-05，長歷史用 `load_rr(start=None)`）
 - `crawl_mtx()` 包在 try 內、排在既有表之後，失敗不影響其他表
+
+### opt_institutional_txo（台指選擇權三大法人・買賣權分計，PK = (date, identity, call_put)；2026-11-16 新增）
+
+| 欄位 | 說明 |
+|---|---|
+| identity | `dealer` / `trust` / `foreign`（外資及陸資） |
+| call_put | `C`（買權）/ `P`（賣權） |
+| long_vol / long_amt / short_vol / short_amt | 買方／賣方 交易口數與契約金額（千元） |
+| long_oi / long_oi_amt / short_oi / short_oi_amt | 買方／賣方 未平倉口數與契約金額（千元） |
+| net_oi / net_oi_amt | 未平倉 買方−賣方（口數／千元） |
+
+- **選擇權的「契約金額」是權利金金額**（口數×權利金×50），部位不動、權利金漲跌也會讓金額變。
+- 歷史回補：FinMind `TaiwanOptionInstitutionalInvestors`（data_id=TXO，**2018-06-05 起**）。只收 `pc_ratio` 有的日期
+  （TXO 交易日），所以 FinMind 的非交易日複本進不來；`backfill_finmind_opt()` 會一直補到 2018-06-05→表內最後日每個交易日都有 6 列才跳過。
+- 每日增量：TAIFEX `callsAndPutsDateDown`（POST，commodityId=`TXO`，**只提供近 3 年**）；查詢結束日超過最後交易日會回 HTML
+  （2026-11-16 實測），所以跟 TXF／MXF 一樣截在 `inst_query_end()`。`crawl_opt()` 包在 try 內、排在最後，失敗不影響其他表。
+- 2026-11-16 驗證：FinMind 回補 2018-06-05→2026-11-16 共 2,057 個交易日×6 列、0 缺 0 多；2026-10、11 月期交所與 FinMind 逐欄 0 差異。
+- 用途：**外資選擇權淨方向**＝外資〔買權 net_oi_amt〕−〔賣權 net_oi_amt〕（千元；高＝偏多）。
+  研究與儀表板見 `..\台指期_電金比\experiment_foreign_ratio.py`、`tx_dashboard.py`（252 日分位 < 1/3＝偏空、晚一天用）。
 
 ### TAIFEX 限流注意（重要教訓）
 
