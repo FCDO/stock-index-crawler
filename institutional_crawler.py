@@ -17,6 +17,11 @@ Tables:
                       (amount = premium value, NT$ thousand). FinMind backfill 2018-06-05+ (TAIFEX TXO trading days only),
                       TAIFEX callsAndPutsDateDown daily (commodityId=TXO; TAIFEX serves last 3y only).
                       Foreign net direction = (call net_oi_amt) - (put net_oi_amt), foreign rows
+- large_trader_txo  : TAIFEX TXO large trader top5/10 OI split by call/put (PK date, call_put C/P); same columns as
+                      large_trader_tx (long = buyer side, short = seller side; all large traders / specific institutions),
+                      mkt_oi = TXO market OI of that side (= pc_ratio call_oi / put_oi). TAIFEX largeTraderOptDown, full
+                      history 2007-07+ (no 3y limit); only TXO rows with month=999999 (all expiries combined).
+                      Free pre-2018 TXO chip data that opt_institutional_txo cannot reach: NOT the 3-investor split, lots only.
 
 TAIFEX throttles: 6s spacing, HTML response = throttled -> long backoff (except pre-data months).
 """
@@ -34,11 +39,13 @@ DB_PATH = "institutional.db"
 FUT_URL = "https://www.taifex.com.tw/cht/3/futContractsDateDown"
 PC_URL = "https://www.taifex.com.tw/cht/3/pcRatioDown"
 LT_URL = "https://www.taifex.com.tw/cht/3/largeTraderFutDown"
+LT_OPT_URL = "https://www.taifex.com.tw/cht/3/largeTraderOptDown"
 FUT_DATA_URL = "https://www.taifex.com.tw/cht/3/futDataDown"
 OPT_URL = "https://www.taifex.com.tw/cht/3/callsAndPutsDateDown"
 FINMIND_URL = "https://api.finmindtrade.com/api/v4/data"
 PC_DATA_START = datetime(2007, 7, 1)
 LT_DATA_START = datetime(2004, 1, 1)
+LT_OPT_DATA_START = datetime(2007, 7, 1)   # TXO large trader backfill start (same as pc_ratio / FinLab 3-investor history)
 FINMIND_FUT_START = 2018
 FINMIND_MTX_START = 2018        # FinMind MTX 3-investor data starts 2018-06-05 (2017 returns empty)
 FINMIND_OPT_FIRST = "2018-06-05"  # FinMind TXO 3-investor (calls/puts split) first date
@@ -121,6 +128,16 @@ def init_db():
             long_oi INTEGER, long_oi_amt INTEGER, short_oi INTEGER, short_oi_amt INTEGER,
             net_oi INTEGER, net_oi_amt INTEGER,
             updated_at TEXT, PRIMARY KEY (date, identity, call_put)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS large_trader_txo (
+            date TEXT, call_put TEXT,
+            t5_all_long INTEGER, t5_all_short INTEGER,
+            t5_spec_long INTEGER, t5_spec_short INTEGER,
+            t10_all_long INTEGER, t10_all_short INTEGER,
+            t10_spec_long INTEGER, t10_spec_short INTEGER,
+            mkt_oi INTEGER, updated_at TEXT, PRIMARY KEY (date, call_put)
         )
     """)
     conn.commit()
@@ -452,6 +469,31 @@ def save_large_trader(conn, rows):
     return len(days)
 
 
+def save_large_trader_opt(conn, rows):
+    """largeTraderOptDown CSV: col0 date, col1 product, col3 call/put (買權/賣權), col4 month, col5 trader category
+    (0=all large traders, 1=specific institutions), col6..9 top5 buy/sell, top10 buy/sell, col10 market OI of that side.
+    Keep TXO rows with month==999999 (all expiries combined); one row per (date, call/put)."""
+    ts = datetime.now().isoformat()
+    days = {}
+    for row in rows[1:]:
+        if len(row) < 11 or "/" not in row[0]:
+            continue
+        if row[1].strip() != "TXO" or row[4].strip() != "999999":
+            continue
+        cp = {"買權": "C", "賣權": "P"}.get(row[3].strip())
+        if cp is None:
+            continue
+        rec = days.setdefault((row[0].strip().replace("/", "-"), cp), {})
+        rec[row[5].strip()] = (_num(row[6]), _num(row[7]), _num(row[8]), _num(row[9]), _num(row[10]))
+    for (d, cp), rec in days.items():
+        a = rec.get("0", (None,) * 5)
+        s = rec.get("1", (None,) * 5)
+        conn.execute("INSERT OR REPLACE INTO large_trader_txo VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                     (d, cp, a[0], a[1], s[0], s[1], a[2], a[3], s[2], s[3], a[4] or s[4], ts))
+    conn.commit()
+    return len(days)
+
+
 def _sub(a, b):
     return None if a is None or b is None else a - b
 
@@ -621,6 +663,15 @@ def crawl_opt(conn, end):
                      save_opt, datetime(latest.year, latest.month, 1), end=end)
 
 
+def crawl_lt_opt(conn):
+    """TXO large trader positions split by call/put. largeTraderOptDown serves full history (no 3y limit) and
+    tolerates end dates past the last trading day, so the first run backfills from LT_OPT_DATA_START (~1 h)
+    and later runs resume from the table's last month."""
+    crawl_taifex(conn, "large_trader_txo", LT_OPT_URL,
+                 lambda s, e: {"queryStartDate": s, "queryEndDate": e},
+                 save_large_trader_opt, LT_OPT_DATA_START)
+
+
 def main():
     print("=" * 50)
     print("TAIFEX/TWSE Institutional & Flows Crawler")
@@ -668,8 +719,14 @@ def main():
     except Exception as e:
         print(f"[txo inst] [WARN] {e}")
 
+    # 6) TXO large trader positions split by call/put (full history 2007-07+): isolated the same way
+    try:
+        crawl_lt_opt(conn)
+    except Exception as e:
+        print(f"[txo large trader] [WARN] {e}")
+
     for t in ("fut_institutional", "pc_ratio", "spot_flows", "margin_totals", "large_trader_tx",
-              "fut_institutional_mtx", "mtx_oi", "opt_institutional_txo"):
+              "fut_institutional_mtx", "mtx_oi", "opt_institutional_txo", "large_trader_txo"):
         cnt, lo, hi = conn.execute(f"SELECT COUNT(*), MIN(date), MAX(date) FROM {t}").fetchone()
         print(f"  {t}: {cnt} rows ({lo} ~ {hi})")
     conn.close()
